@@ -1,12 +1,12 @@
 --// Aurora UI Library
 --// A minimalistic, beautiful UI library for Roblox
---// Version: 2.0.0
+--// Version: 3.0.0
 
 local Aurora = {}
-local TweenService = game:GetService("TweenService")
+local TweenService     = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
+local Players          = game:GetService("Players")
+local LocalPlayer      = Players.LocalPlayer
 
 -- ─────────────────────────────────────────────
 --  Configuration
@@ -14,17 +14,17 @@ local LocalPlayer = Players.LocalPlayer
 
 Aurora.Config = {
     Theme = {
-        Primary     = Color3.fromRGB(88,  101, 242),
-        Secondary   = Color3.fromRGB(30,  30,  35),
-        Background  = Color3.fromRGB(18,  18,  22),
-        Surface     = Color3.fromRGB(25,  25,  30),
-        Text        = Color3.fromRGB(245, 245, 250),
-        TextMuted   = Color3.fromRGB(150, 150, 160),
-        Success     = Color3.fromRGB(46,  204, 113),
-        Warning     = Color3.fromRGB(241, 196, 15),
-        Error       = Color3.fromRGB(231, 76,  60),
-        Border      = Color3.fromRGB(40,  40,  50),
-        Glow        = Color3.fromRGB(88,  101, 242),
+        Primary    = Color3.fromRGB(88,  101, 242),
+        Secondary  = Color3.fromRGB(30,  30,  35),
+        Background = Color3.fromRGB(18,  18,  22),
+        Surface    = Color3.fromRGB(25,  25,  30),
+        Text       = Color3.fromRGB(245, 245, 250),
+        TextMuted  = Color3.fromRGB(150, 150, 160),
+        Success    = Color3.fromRGB(46,  204, 113),
+        Warning    = Color3.fromRGB(241, 196, 15),
+        Error      = Color3.fromRGB(231, 76,  60),
+        Border     = Color3.fromRGB(55,  55,  68),   -- brighter: was 40,40,50
+        Glow       = Color3.fromRGB(88,  101, 242),
     },
     Animation = {
         Duration  = 0.3,
@@ -39,18 +39,29 @@ Aurora.Config = {
 }
 
 -- ─────────────────────────────────────────────
---  Internal notification queue
+--  Signal — lightweight pub/sub event system
 -- ─────────────────────────────────────────────
 
-local notifQueue   = {}
-local NOTIF_HEIGHT = 80
-local NOTIF_GAP    = 10
-local NOTIF_X      = -320   -- offset from right edge
+local Signal = {}
+Signal.__index = Signal
 
-local function _repositionNotifs()
-    for i, data in ipairs(notifQueue) do
-        local targetY = -(i * (NOTIF_HEIGHT + NOTIF_GAP))
-        Tween(data.frame, {Position = UDim2.new(1, NOTIF_X, 1, targetY)}, 0.25)
+function Signal.new()
+    return setmetatable({_handlers = {}}, Signal)
+end
+
+function Signal:Connect(fn)
+    local id = #self._handlers + 1
+    self._handlers[id] = fn
+    return {
+        Disconnect = function()
+            self._handlers[id] = nil
+        end
+    }
+end
+
+function Signal:Fire(...)
+    for _, fn in pairs(self._handlers) do
+        pcall(fn, ...)
     end
 end
 
@@ -64,77 +75,94 @@ local function Create(className, props)
     return inst
 end
 
--- Forward-declare Tween so it can be used in _repositionNotifs above
-Tween = function(inst, props, duration, easingStyle, easingDirection)
+-- local Tween — no longer pollutes global environment
+local function Tween(inst, props, duration, easingStyle, easingDir)
     local info = TweenInfo.new(
-        duration      or Aurora.Config.Animation.Duration,
-        easingStyle   or Aurora.Config.Animation.Easing,
-        easingDirection or Aurora.Config.Animation.Direction
+        duration    or Aurora.Config.Animation.Duration,
+        easingStyle or Aurora.Config.Animation.Easing,
+        easingDir   or Aurora.Config.Animation.Direction
     )
     local t = TweenService:Create(inst, info, props)
     t:Play()
     return t
 end
 
-local function AddShadow(parent, intensity)
-    intensity = intensity or 1
-    return Create("ImageLabel", {
-        Name             = "Shadow",
-        Parent           = parent,
-        AnchorPoint      = Vector2.new(0.5, 0.5),
-        Position         = UDim2.new(0.5, 0, 0.5, 4),
-        Size             = UDim2.new(1, 24, 1, 24),
-        BackgroundTransparency = 1,
-        Image            = "rbxassetid://6014261993",
-        ImageColor3      = Color3.new(0, 0, 0),
-        ImageTransparency = Aurora.Config.ShadowTransparency * intensity,
-        ScaleType        = Enum.ScaleType.Slice,
-        SliceCenter      = Rect.new(49, 49, 450, 450),
-        ZIndex           = parent.ZIndex - 1,
+local function AddCorner(parent, radius)
+    return Create("UICorner", {
+        CornerRadius = radius or Aurora.Config.CornerRadius,
+        Parent       = parent,
     })
 end
 
-local function AddCorner(parent, radius)
-    return Create("UICorner", {CornerRadius = radius or Aurora.Config.CornerRadius, Parent = parent})
+local function AddShadow(parent, intensity)
+    return Create("ImageLabel", {
+        Name                  = "Shadow",
+        Parent                = parent,
+        AnchorPoint           = Vector2.new(0.5, 0.5),
+        Position              = UDim2.new(0.5, 0, 0.5, 4),
+        Size                  = UDim2.new(1, 24, 1, 24),
+        BackgroundTransparency = 1,
+        Image                 = "rbxassetid://6014261993",
+        ImageColor3           = Color3.new(0, 0, 0),
+        ImageTransparency     = Aurora.Config.ShadowTransparency * (intensity or 1),
+        ScaleType             = Enum.ScaleType.Slice,
+        SliceCenter           = Rect.new(49, 49, 450, 450),
+        ZIndex                = parent.ZIndex - 1,
+    })
 end
 
 local function MakeDraggable(frame, handle)
     handle = handle or frame
     local dragging, dragStart, startPos = false, nil, nil
-
     local conns = {}
-    conns[1] = handle.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
+
+    conns[1] = handle.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1
+        or inp.UserInputType == Enum.UserInputType.Touch then
             dragging  = true
-            dragStart = input.Position
+            dragStart = inp.Position
             startPos  = frame.Position
         end
     end)
 
-    conns[2] = UserInputService.InputChanged:Connect(function(input)
+    conns[2] = UserInputService.InputChanged:Connect(function(inp)
         if dragging and (
-            input.UserInputType == Enum.UserInputType.MouseMovement or
-            input.UserInputType == Enum.UserInputType.Touch
+            inp.UserInputType == Enum.UserInputType.MouseMovement or
+            inp.UserInputType == Enum.UserInputType.Touch
         ) then
-            local delta = input.Position - dragStart
+            local d = inp.Position - dragStart
             frame.Position = UDim2.new(
-                startPos.X.Scale, startPos.X.Offset + delta.X,
-                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y
             )
         end
     end)
 
-    conns[3] = UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1
-        or input.UserInputType == Enum.UserInputType.Touch then
+    conns[3] = UserInputService.InputEnded:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1
+        or inp.UserInputType == Enum.UserInputType.Touch then
             dragging = false
         end
     end)
 
-    -- Returns disconnect function for cleanup
     return function()
         for _, c in ipairs(conns) do c:Disconnect() end
+    end
+end
+
+-- ─────────────────────────────────────────────
+--  Notification queue
+-- ─────────────────────────────────────────────
+
+local notifQueue   = {}
+local NOTIF_HEIGHT = 80
+local NOTIF_GAP    = 8
+local NOTIF_X      = -300
+
+local function RepositionNotifs()
+    for i, data in ipairs(notifQueue) do
+        local targetY = -(i * (NOTIF_HEIGHT + NOTIF_GAP))
+        Tween(data.frame, {Position = UDim2.new(1, NOTIF_X, 1, targetY)}, 0.25)
     end
 end
 
@@ -148,9 +176,8 @@ function Aurora:CreateWindow(config)
     local size     = config.Size     or UDim2.new(0, 620, 0, 420)
     local position = config.Position or UDim2.new(0.5, -310, 0.5, -210)
 
-    local connections = {}  -- all connections owned by this window
+    local windowConnections = {}
 
-    --// ScreenGui
     local ScreenGui = Create("ScreenGui", {
         Name           = "AuroraUI",
         Parent         = LocalPlayer:WaitForChild("PlayerGui"),
@@ -158,7 +185,6 @@ function Aurora:CreateWindow(config)
         ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
     })
 
-    --// Main Frame
     local MainFrame = Create("Frame", {
         Name             = "MainFrame",
         Parent           = ScreenGui,
@@ -171,7 +197,7 @@ function Aurora:CreateWindow(config)
     AddCorner(MainFrame)
     AddShadow(MainFrame, 1.2)
 
-    --// Title Bar
+    --// Title bar
     local TitleBar = Create("Frame", {
         Name             = "TitleBar",
         Parent           = MainFrame,
@@ -180,9 +206,7 @@ function Aurora:CreateWindow(config)
         BorderSizePixel  = 0,
     })
     AddCorner(TitleBar)
-
-    -- Patch bottom-rounded corners on titlebar
-    Create("Frame", {
+    Create("Frame", {  -- patch bottom corners
         Parent           = TitleBar,
         Position         = UDim2.new(0, 0, 1, -8),
         Size             = UDim2.new(1, 0, 0, 8),
@@ -203,33 +227,38 @@ function Aurora:CreateWindow(config)
         TextXAlignment     = Enum.TextXAlignment.Left,
     })
 
-    --// Window control buttons (close / minimize)
-    local function MakeControlBtn(xOffset, icon, bgColor)
+    --// Control buttons (✕ / —)
+    local function MakeControlBtn(xOffset, icon, iconColor)
         local btn = Create("TextButton", {
             Parent           = TitleBar,
             Position         = UDim2.new(1, xOffset, 0.5, -10),
             Size             = UDim2.new(0, 20, 0, 20),
             BackgroundColor3 = Aurora.Config.Theme.Surface,
             Text             = icon,
-            TextColor3       = bgColor,
+            TextColor3       = iconColor,
             Font             = Aurora.Config.FontBold,
             TextSize         = 13,
             AutoButtonColor  = false,
             BorderSizePixel  = 0,
         })
         AddCorner(btn, UDim.new(0, 4))
-
         btn.MouseEnter:Connect(function()
-            Tween(btn, {BackgroundColor3 = bgColor, TextColor3 = Aurora.Config.Theme.Text}, 0.15)
+            Tween(btn, {BackgroundColor3 = iconColor, TextColor3 = Aurora.Config.Theme.Text}, 0.15)
         end)
         btn.MouseLeave:Connect(function()
-            Tween(btn, {BackgroundColor3 = Aurora.Config.Theme.Surface, TextColor3 = bgColor}, 0.15)
+            Tween(btn, {BackgroundColor3 = Aurora.Config.Theme.Surface, TextColor3 = iconColor}, 0.15)
         end)
         return btn
     end
 
     local CloseBtn    = MakeControlBtn(-28, "✕", Aurora.Config.Theme.Error)
     local MinimizeBtn = MakeControlBtn(-54, "—", Aurora.Config.Theme.TextMuted)
+
+    local minimized = false
+    MinimizeBtn.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        Tween(MainFrame, {Size = minimized and UDim2.new(0, size.X.Offset, 0, 40) or size}, 0.3)
+    end)
 
     CloseBtn.MouseButton1Click:Connect(function()
         local cx = MainFrame.Position.X.Offset + size.X.Offset / 2
@@ -239,18 +268,11 @@ function Aurora:CreateWindow(config)
             Position = UDim2.new(MainFrame.Position.X.Scale, cx, MainFrame.Position.Y.Scale, cy),
         }, 0.3)
         task.wait(0.3)
+        for _, c in ipairs(windowConnections) do c:Disconnect() end
         ScreenGui:Destroy()
-        -- Disconnect all window-level connections
-        for _, c in ipairs(connections) do c:Disconnect() end
     end)
 
-    local minimized = false
-    MinimizeBtn.MouseButton1Click:Connect(function()
-        minimized = not minimized
-        Tween(MainFrame, {Size = minimized and UDim2.new(0, size.X.Offset, 0, 40) or size}, 0.3)
-    end)
-
-    --// Tab sidebar (wider for icon + label)
+    --// Tab sidebar
     local TabContainer = Create("Frame", {
         Name             = "TabContainer",
         Parent           = MainFrame,
@@ -260,18 +282,11 @@ function Aurora:CreateWindow(config)
         BorderSizePixel  = 0,
     })
     AddCorner(TabContainer)
-
-    Create("UIListLayout", {
-        Parent    = TabContainer,
-        Padding   = UDim.new(0, 4),
-        SortOrder = Enum.SortOrder.LayoutOrder,
-    })
+    Create("UIListLayout", {Parent = TabContainer, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder})
     Create("UIPadding", {
         Parent        = TabContainer,
-        PaddingTop    = UDim.new(0, 6),
-        PaddingBottom = UDim.new(0, 6),
-        PaddingLeft   = UDim.new(0, 6),
-        PaddingRight  = UDim.new(0, 6),
+        PaddingTop    = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
+        PaddingLeft   = UDim.new(0, 6), PaddingRight  = UDim.new(0, 6),
     })
 
     --// Content area
@@ -294,13 +309,18 @@ function Aurora:CreateWindow(config)
         ContentContainer = ContentContainer,
         Tabs             = {},
         ActiveTab        = nil,
-        _connections     = connections,
+        -- Events
+        OnTabChanged     = Signal.new(),  -- fires (newTab, oldTab)
     }
 
-    -- Programmatically activate a tab
     function Window:SelectTab(index)
         local tab = self.Tabs[index]
         if tab and tab.Activate then tab.Activate() end
+    end
+
+    function Window:Destroy()
+        for _, c in ipairs(windowConnections) do c:Disconnect() end
+        ScreenGui:Destroy()
     end
 
     -- ─────────────────────────────────────────
@@ -308,11 +328,10 @@ function Aurora:CreateWindow(config)
     -- ─────────────────────────────────────────
 
     function Window:CreateTab(tabConfig)
-        tabConfig   = tabConfig or {}
+        tabConfig     = tabConfig or {}
         local tabName = tabConfig.Name or "Tab"
-        local tabIcon = tabConfig.Icon or ""   -- now actually rendered
+        local tabIcon = tabConfig.Icon or ""
 
-        --// Tab button
         local TabButton = Create("TextButton", {
             Name             = tabName .. "Tab",
             Parent           = TabContainer,
@@ -324,7 +343,6 @@ function Aurora:CreateWindow(config)
         })
         AddCorner(TabButton, UDim.new(0, 4))
 
-        -- Icon (optional)
         if tabIcon ~= "" then
             Create("ImageLabel", {
                 Name               = "Icon",
@@ -352,51 +370,45 @@ function Aurora:CreateWindow(config)
             TextTruncate       = Enum.TextTruncate.AtEnd,
         })
 
-        --// Tab content (scrollable)
         local TabContent = Create("ScrollingFrame", {
             Name                 = tabName .. "Content",
             Parent               = ContentContainer,
             Size                 = UDim2.new(1, 0, 1, 0),
             BackgroundTransparency = 1,
             BorderSizePixel      = 0,
-            ScrollBarThickness   = 2,
-            ScrollBarImageColor3 = Aurora.Config.Theme.Primary,
+            ScrollBarThickness   = 3,
+            ScrollBarImageColor3 = Aurora.Config.Theme.Border,
             Visible              = false,
             AutomaticCanvasSize  = Enum.AutomaticSize.Y,
             CanvasSize           = UDim2.new(0, 0, 0, 0),
         })
-
-        Create("UIListLayout", {
-            Parent    = TabContent,
-            Padding   = UDim.new(0, 8),
-            SortOrder = Enum.SortOrder.LayoutOrder,
-        })
+        Create("UIListLayout", {Parent = TabContent, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder})
         Create("UIPadding", {
             Parent        = TabContent,
-            PaddingTop    = UDim.new(0, 10),
-            PaddingBottom = UDim.new(0, 10),
-            PaddingLeft   = UDim.new(0, 10),
-            PaddingRight  = UDim.new(0, 12),
+            PaddingTop    = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10),
+            PaddingLeft   = UDim.new(0, 10), PaddingRight  = UDim.new(0, 12),
         })
 
-        --// Tab object
         local Tab = {
             Button   = TabButton,
             Content  = TabContent,
             Elements = {},
-            Activate = nil,  -- set below after closure is defined
+            Activate = nil,
+            -- Events
+            OnElementAdded = Signal.new(),
         }
 
         local function Activate()
             if Window.ActiveTab == Tab then return end
+            local oldTab = Window.ActiveTab
 
-            if Window.ActiveTab then
-                Tween(Window.ActiveTab.Button, {BackgroundColor3 = Aurora.Config.Theme.Background}, 0.2)
-                Tween(Window.ActiveTab.Button.Label, {TextColor3 = Aurora.Config.Theme.TextMuted}, 0.2)
-                if Window.ActiveTab.Button:FindFirstChild("Icon") then
-                    Tween(Window.ActiveTab.Button.Icon, {ImageColor3 = Aurora.Config.Theme.TextMuted}, 0.2)
+            if oldTab then
+                Tween(oldTab.Button,       {BackgroundColor3 = Aurora.Config.Theme.Background}, 0.2)
+                Tween(oldTab.Button.Label, {TextColor3 = Aurora.Config.Theme.TextMuted}, 0.2)
+                if oldTab.Button:FindFirstChild("Icon") then
+                    Tween(oldTab.Button.Icon, {ImageColor3 = Aurora.Config.Theme.TextMuted}, 0.2)
                 end
-                Window.ActiveTab.Content.Visible = false
+                oldTab.Content.Visible = false
             end
 
             Window.ActiveTab = Tab
@@ -405,9 +417,10 @@ function Aurora:CreateWindow(config)
             if TabButton:FindFirstChild("Icon") then
                 Tween(TabButton.Icon, {ImageColor3 = Aurora.Config.Theme.Text}, 0.2)
             end
-
             TabContent.Visible = true
             TabContent.CanvasPosition = Vector2.new(0, 0)
+
+            Window.OnTabChanged:Fire(Tab, oldTab)
         end
 
         Tab.Activate = Activate
@@ -428,28 +441,36 @@ function Aurora:CreateWindow(config)
             return f
         end
 
+        local function RegisterElement(element, frame)
+            table.insert(Tab.Elements, element)
+            Tab.OnElementAdded:Fire(element)
+            -- Expose Destroy on every element
+            element.Destroy = function()
+                frame:Destroy()
+                for i, e in ipairs(Tab.Elements) do
+                    if e == element then table.remove(Tab.Elements, i) break end
+                end
+            end
+            return element
+        end
+
         -- ── Button ────────────────────────────
 
-        function Tab:CreateButton(btnConfig)
-            btnConfig = btnConfig or {}
-            local btnText  = btnConfig.Text     or "Button"
-            local callback = btnConfig.Callback or function() end
-
+        function Tab:CreateButton(cfg)
+            cfg = cfg or {}
             local frame = BaseFrame(36)
-
             local btn = Create("TextButton", {
                 Parent             = frame,
                 Size               = UDim2.new(1, 0, 1, 0),
                 BackgroundTransparency = 1,
-                Text               = btnText,
+                Text               = cfg.Text or "Button",
                 TextColor3         = Aurora.Config.Theme.Text,
                 Font               = Aurora.Config.FontMedium,
                 TextSize           = 14,
                 AutoButtonColor    = false,
             })
-
             btn.MouseEnter:Connect(function()
-                Tween(frame, {BackgroundColor3 = Color3.fromRGB(38, 38, 48)}, 0.15)
+                Tween(frame, {BackgroundColor3 = Color3.fromRGB(35, 35, 45)}, 0.15)
             end)
             btn.MouseLeave:Connect(function()
                 Tween(frame, {BackgroundColor3 = Aurora.Config.Theme.Background}, 0.15)
@@ -458,22 +479,22 @@ function Aurora:CreateWindow(config)
                 Tween(frame, {BackgroundColor3 = Aurora.Config.Theme.Primary}, 0.1)
             end)
             btn.MouseButton1Up:Connect(function()
-                Tween(frame, {BackgroundColor3 = Color3.fromRGB(38, 38, 48)}, 0.1)
+                Tween(frame, {BackgroundColor3 = Color3.fromRGB(35, 35, 45)}, 0.1)
             end)
-            btn.MouseButton1Click:Connect(callback)
+            btn.MouseButton1Click:Connect(cfg.Callback or function() end)
 
-            table.insert(Tab.Elements, frame)
-            return {Frame = frame, SetText = function(t) btn.Text = t end}
+            return RegisterElement({
+                Frame   = frame,
+                SetText = function(t) btn.Text = t end,
+            }, frame)
         end
 
         -- ── Toggle ────────────────────────────
 
-        function Tab:CreateToggle(toggleConfig)
-            toggleConfig = toggleConfig or {}
-            local toggleText = toggleConfig.Text     or "Toggle"
-            local toggled    = toggleConfig.Default  or false
-            local callback   = toggleConfig.Callback or function() end
-
+        function Tab:CreateToggle(cfg)
+            cfg = cfg or {}
+            local toggled = cfg.Default or false
+            local OnChanged = Signal.new()
             local frame = BaseFrame(36)
 
             Create("TextLabel", {
@@ -481,7 +502,7 @@ function Aurora:CreateWindow(config)
                 Position           = UDim2.new(0, 12, 0, 0),
                 Size               = UDim2.new(1, -60, 1, 0),
                 BackgroundTransparency = 1,
-                Text               = toggleText,
+                Text               = cfg.Text or "Toggle",
                 TextColor3         = Aurora.Config.Theme.Text,
                 Font               = Aurora.Config.FontMedium,
                 TextSize           = 14,
@@ -506,9 +527,13 @@ function Aurora:CreateWindow(config)
             })
             AddCorner(Circle, UDim.new(1, 0))
 
-            local function Refresh()
+            local function Refresh(silent)
                 Tween(Track,  {BackgroundColor3 = toggled and Aurora.Config.Theme.Primary or Aurora.Config.Theme.Border}, 0.2)
                 Tween(Circle, {Position = toggled and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)}, 0.2)
+                if not silent then
+                    if cfg.Callback then cfg.Callback(toggled) end
+                    OnChanged:Fire(toggled)
+                end
             end
 
             Create("TextButton", {
@@ -518,33 +543,31 @@ function Aurora:CreateWindow(config)
                 Text               = "",
             }).MouseButton1Click:Connect(function()
                 toggled = not toggled
-                Refresh()
-                callback(toggled)
+                Refresh(false)
             end)
 
-            table.insert(Tab.Elements, frame)
-            return {
-                Frame    = frame,
-                GetValue = function() return toggled end,
-                SetValue = function(val)         -- now properly syncs visuals
-                    toggled = val
-                    Refresh()
-                    callback(toggled)
+            return RegisterElement({
+                Frame     = frame,
+                OnChanged = OnChanged,
+                GetValue  = function() return toggled end,
+                SetValue  = function(val)
+                    if toggled ~= val then
+                        toggled = val
+                        Refresh(false)
+                    end
                 end,
-            }
+            }, frame)
         end
 
         -- ── Slider ────────────────────────────
 
-        function Tab:CreateSlider(sliderConfig)
-            sliderConfig = sliderConfig or {}
-            local sliderText = sliderConfig.Text      or "Slider"
-            local min        = sliderConfig.Min       or 0
-            local max        = sliderConfig.Max       or 100
-            local default    = sliderConfig.Default   or min
-            local increment  = sliderConfig.Increment or 1
-            local callback   = sliderConfig.Callback  or function() end
-
+        function Tab:CreateSlider(cfg)
+            cfg = cfg or {}
+            local min       = cfg.Min       or 0
+            local max       = cfg.Max       or 100
+            local increment = cfg.Increment or 1
+            local current   = math.clamp(cfg.Default or min, min, max)
+            local OnChanged = Signal.new()
             local frame = BaseFrame(50)
 
             Create("TextLabel", {
@@ -552,7 +575,7 @@ function Aurora:CreateWindow(config)
                 Position           = UDim2.new(0, 12, 0, 8),
                 Size               = UDim2.new(1, -60, 0, 16),
                 BackgroundTransparency = 1,
-                Text               = sliderText,
+                Text               = cfg.Text or "Slider",
                 TextColor3         = Aurora.Config.Theme.Text,
                 Font               = Aurora.Config.FontMedium,
                 TextSize           = 14,
@@ -564,110 +587,98 @@ function Aurora:CreateWindow(config)
                 Position           = UDim2.new(1, -52, 0, 8),
                 Size               = UDim2.new(0, 42, 0, 16),
                 BackgroundTransparency = 1,
-                Text               = tostring(default),
+                Text               = tostring(current),
                 TextColor3         = Aurora.Config.Theme.Primary,
                 Font               = Aurora.Config.FontBold,
                 TextSize           = 14,
                 TextXAlignment     = Enum.TextXAlignment.Right,
             })
 
-            local SliderBar = Create("Frame", {
+            local Bar = Create("Frame", {
                 Parent           = frame,
                 Position         = UDim2.new(0, 12, 0, 32),
                 Size             = UDim2.new(1, -24, 0, 4),
                 BackgroundColor3 = Aurora.Config.Theme.Border,
                 BorderSizePixel  = 0,
             })
-            AddCorner(SliderBar, UDim.new(1, 0))
+            AddCorner(Bar, UDim.new(1, 0))
 
             local Fill = Create("Frame", {
-                Parent           = SliderBar,
-                Size             = UDim2.new((default - min) / (max - min), 0, 1, 0),
+                Parent           = Bar,
+                Size             = UDim2.new((current - min) / (max - min), 0, 1, 0),
                 BackgroundColor3 = Aurora.Config.Theme.Primary,
                 BorderSizePixel  = 0,
             })
             AddCorner(Fill, UDim.new(1, 0))
 
             local Knob = Create("Frame", {
-                Parent           = SliderBar,
-                Position         = UDim2.new((default - min) / (max - min), -6, 0.5, -6),
+                Parent           = Bar,
+                Position         = UDim2.new((current - min) / (max - min), -6, 0.5, -6),
                 Size             = UDim2.new(0, 12, 0, 12),
                 BackgroundColor3 = Color3.new(1, 1, 1),
                 BorderSizePixel  = 0,
             })
             AddCorner(Knob, UDim.new(1, 0))
 
-            local sliderDragging = false
-            local currentValue   = default
+            local dragging = false
 
-            local function UpdateSlider(inputX)
-                local pct   = math.clamp((inputX - SliderBar.AbsolutePosition.X) / SliderBar.AbsoluteSize.X, 0, 1)
+            local function Apply(inputX)
+                local pct   = math.clamp((inputX - Bar.AbsolutePosition.X) / Bar.AbsoluteSize.X, 0, 1)
                 local raw   = min + (max - min) * pct
-                local value = math.floor(raw / increment + 0.5) * increment
-                value       = math.clamp(value, min, max)
-
-                if value == currentValue then return end
-                currentValue = value
-
-                local fill = (value - min) / (max - min)
-                Fill.Size      = UDim2.new(fill, 0, 1, 0)
-                Knob.Position  = UDim2.new(fill, -6, 0.5, -6)
+                local value = math.clamp(math.floor(raw / increment + 0.5) * increment, min, max)
+                if value == current then return end
+                current = value
+                local f = (value - min) / (max - min)
+                Fill.Size      = UDim2.new(f, 0, 1, 0)
+                Knob.Position  = UDim2.new(f, -6, 0.5, -6)
                 ValueLabel.Text = tostring(value)
-                callback(value)
+                if cfg.Callback then cfg.Callback(value) end
+                OnChanged:Fire(value)
             end
 
-            -- Connections stored so they can be GC'd when window is closed
             local c1 = Knob.InputBegan:Connect(function(inp)
-                if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-                    sliderDragging = true
-                end
+                if inp.UserInputType == Enum.UserInputType.MouseButton1 then dragging = true end
             end)
-            local c2 = SliderBar.InputBegan:Connect(function(inp)
+            local c2 = Bar.InputBegan:Connect(function(inp)
                 if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-                    sliderDragging = true
-                    UpdateSlider(inp.Position.X)
+                    dragging = true
+                    Apply(inp.Position.X)
                 end
             end)
             local c3 = UserInputService.InputChanged:Connect(function(inp)
-                if sliderDragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
-                    UpdateSlider(inp.Position.X)
+                if dragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
+                    Apply(inp.Position.X)
                 end
             end)
             local c4 = UserInputService.InputEnded:Connect(function(inp)
-                if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-                    sliderDragging = false
-                end
+                if inp.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
             end)
+            table.insert(windowConnections, c3)
+            table.insert(windowConnections, c4)
 
-            table.insert(connections, c3)
-            table.insert(connections, c4)
-
-            table.insert(Tab.Elements, frame)
-            return {
-                Frame    = frame,
-                GetValue = function() return currentValue end,
-                SetValue = function(val)
+            return RegisterElement({
+                Frame     = frame,
+                OnChanged = OnChanged,
+                GetValue  = function() return current end,
+                SetValue  = function(val)
                     val = math.clamp(val, min, max)
-                    currentValue = val
-                    local fill = (val - min) / (max - min)
-                    Fill.Size       = UDim2.new(fill, 0, 1, 0)
-                    Knob.Position   = UDim2.new(fill, -6, 0.5, -6)
+                    current = val
+                    local f = (val - min) / (max - min)
+                    Fill.Size       = UDim2.new(f, 0, 1, 0)
+                    Knob.Position   = UDim2.new(f, -6, 0.5, -6)
                     ValueLabel.Text = tostring(val)
                 end,
-            }
+            }, frame)
         end
 
         -- ── Dropdown ─────────────────────────
 
-        function Tab:CreateDropdown(dropdownConfig)
-            dropdownConfig  = dropdownConfig or {}
-            local labelText = dropdownConfig.Text     or "Dropdown"
-            local options   = dropdownConfig.Options  or {}
-            local default   = dropdownConfig.Default  or "Select..."   -- local, fixes global leak
-            local callback  = dropdownConfig.Callback or function() end
-
-            local selected  = default
-            local expanded  = false
+        function Tab:CreateDropdown(cfg)
+            cfg = cfg or {}
+            local options  = cfg.Options or {}
+            local selected = cfg.Default or "Select..."
+            local expanded = false
+            local OnChanged = Signal.new()
 
             local DropdownFrame = Create("Frame", {
                 Parent           = TabContent,
@@ -683,7 +694,7 @@ function Aurora:CreateWindow(config)
                 Position           = UDim2.new(0, 12, 0, 0),
                 Size               = UDim2.new(1, -38, 0, 36),
                 BackgroundTransparency = 1,
-                Text               = labelText .. ": " .. selected,
+                Text               = (cfg.Text or "Dropdown") .. ": " .. selected,
                 TextColor3         = Aurora.Config.Theme.Text,
                 Font               = Aurora.Config.FontMedium,
                 TextSize           = 14,
@@ -710,14 +721,10 @@ function Aurora:CreateWindow(config)
                 BorderSizePixel  = 0,
                 ClipsDescendants = true,
             })
-
-            Create("UIListLayout", {
-                Parent    = OptionsFrame,
-                SortOrder = Enum.SortOrder.LayoutOrder,
-            })
+            Create("UIListLayout", {Parent = OptionsFrame, SortOrder = Enum.SortOrder.LayoutOrder})
 
             for i, option in ipairs(options) do
-                local optBtn = Create("TextButton", {
+                local ob = Create("TextButton", {
                     Parent           = OptionsFrame,
                     Size             = UDim2.new(1, 0, 0, 30),
                     BackgroundColor3 = Aurora.Config.Theme.Surface,
@@ -728,20 +735,20 @@ function Aurora:CreateWindow(config)
                     LayoutOrder      = i,
                     AutoButtonColor  = false,
                 })
-
-                optBtn.MouseEnter:Connect(function()
-                    Tween(optBtn, {BackgroundColor3 = Aurora.Config.Theme.Background, TextColor3 = Aurora.Config.Theme.Text}, 0.15)
+                ob.MouseEnter:Connect(function()
+                    Tween(ob, {BackgroundColor3 = Aurora.Config.Theme.Background, TextColor3 = Aurora.Config.Theme.Text}, 0.15)
                 end)
-                optBtn.MouseLeave:Connect(function()
-                    Tween(optBtn, {BackgroundColor3 = Aurora.Config.Theme.Surface, TextColor3 = Aurora.Config.Theme.TextMuted}, 0.15)
+                ob.MouseLeave:Connect(function()
+                    Tween(ob, {BackgroundColor3 = Aurora.Config.Theme.Surface, TextColor3 = Aurora.Config.Theme.TextMuted}, 0.15)
                 end)
-                optBtn.MouseButton1Click:Connect(function()
-                    selected    = option
-                    Label.Text  = labelText .. ": " .. option
-                    callback(option)
-                    expanded    = false
+                ob.MouseButton1Click:Connect(function()
+                    selected   = option
+                    Label.Text = (cfg.Text or "Dropdown") .. ": " .. option
+                    if cfg.Callback then cfg.Callback(option) end
+                    OnChanged:Fire(option)
+                    expanded = false
                     Tween(DropdownFrame, {Size = UDim2.new(1, 0, 0, 36)}, 0.2)
-                    Tween(Arrow,         {Rotation = 0}, 0.2)
+                    Tween(Arrow, {Rotation = 0}, 0.2)
                 end)
             end
 
@@ -752,32 +759,28 @@ function Aurora:CreateWindow(config)
                 Text               = "",
             }).MouseButton1Click:Connect(function()
                 expanded = not expanded
-                local targetH = expanded and 36 + #options * 30 or 36
-                Tween(DropdownFrame, {Size = UDim2.new(1, 0, 0, targetH)}, 0.2)
-                Tween(Arrow,         {Rotation = expanded and 180 or 0}, 0.2)
+                Tween(DropdownFrame, {Size = UDim2.new(1, 0, 0, expanded and 36 + #options * 30 or 36)}, 0.2)
+                Tween(Arrow, {Rotation = expanded and 180 or 0}, 0.2)
             end)
 
-            table.insert(Tab.Elements, DropdownFrame)
-            return {
-                Frame    = DropdownFrame,
-                GetValue = function() return selected end,
-                SetValue = function(val)
+            return RegisterElement({
+                Frame     = DropdownFrame,
+                OnChanged = OnChanged,
+                GetValue  = function() return selected end,
+                SetValue  = function(val)
                     if table.find(options, val) then
                         selected   = val
-                        Label.Text = labelText .. ": " .. val
+                        Label.Text = (cfg.Text or "Dropdown") .. ": " .. val
                     end
                 end,
-            }
+            }, DropdownFrame)
         end
 
-        -- ── TextBox (input field) ─────────────  NEW
+        -- ── Input ─────────────────────────────
 
-        function Tab:CreateInput(inputConfig)
-            inputConfig    = inputConfig or {}
-            local labelTxt = inputConfig.Text        or "Input"
-            local placeholder = inputConfig.Placeholder or "Enter text..."
-            local callback = inputConfig.Callback    or function() end
-
+        function Tab:CreateInput(cfg)
+            cfg = cfg or {}
+            local OnChanged = Signal.new()
             local frame = BaseFrame(54)
 
             Create("TextLabel", {
@@ -785,7 +788,7 @@ function Aurora:CreateWindow(config)
                 Position           = UDim2.new(0, 12, 0, 6),
                 Size               = UDim2.new(1, -24, 0, 16),
                 BackgroundTransparency = 1,
-                Text               = labelTxt,
+                Text               = cfg.Text or "Input",
                 TextColor3         = Aurora.Config.Theme.TextMuted,
                 Font               = Aurora.Config.FontMedium,
                 TextSize           = 12,
@@ -799,7 +802,7 @@ function Aurora:CreateWindow(config)
                 BackgroundColor3   = Aurora.Config.Theme.Surface,
                 BorderSizePixel    = 0,
                 Text               = "",
-                PlaceholderText    = placeholder,
+                PlaceholderText    = cfg.Placeholder or "Type here...",
                 PlaceholderColor3  = Aurora.Config.Theme.TextMuted,
                 TextColor3         = Aurora.Config.Theme.Text,
                 Font               = Aurora.Config.Font,
@@ -808,34 +811,323 @@ function Aurora:CreateWindow(config)
                 TextXAlignment     = Enum.TextXAlignment.Left,
             })
             AddCorner(InputBox, UDim.new(0, 4))
-            Create("UIPadding", {
-                Parent      = InputBox,
-                PaddingLeft = UDim.new(0, 8),
+            Create("UIPadding", {Parent = InputBox, PaddingLeft = UDim.new(0, 8)})
+
+            InputBox.Focused:Connect(function()
+                Tween(InputBox, {BackgroundColor3 = Color3.fromRGB(32, 32, 42)}, 0.15)
+            end)
+            InputBox.FocusLost:Connect(function(enter)
+                Tween(InputBox, {BackgroundColor3 = Aurora.Config.Theme.Surface}, 0.15)
+                if enter then
+                    if cfg.Callback then cfg.Callback(InputBox.Text) end
+                    OnChanged:Fire(InputBox.Text)
+                end
+            end)
+
+            return RegisterElement({
+                Frame     = frame,
+                OnChanged = OnChanged,
+                GetValue  = function() return InputBox.Text end,
+                SetValue  = function(val) InputBox.Text = val end,
+            }, frame)
+        end
+
+        -- ── Keybind ───────────────────────────  NEW
+
+        function Tab:CreateKeybind(cfg)
+            cfg = cfg or {}
+            local current   = cfg.Default or Enum.KeyCode.Unknown
+            local listening = false
+            local OnChanged = Signal.new()
+            local frame = BaseFrame(36)
+
+            Create("TextLabel", {
+                Parent             = frame,
+                Position           = UDim2.new(0, 12, 0, 0),
+                Size               = UDim2.new(1, -110, 1, 0),
+                BackgroundTransparency = 1,
+                Text               = cfg.Text or "Keybind",
+                TextColor3         = Aurora.Config.Theme.Text,
+                Font               = Aurora.Config.FontMedium,
+                TextSize           = 14,
+                TextXAlignment     = Enum.TextXAlignment.Left,
             })
 
-            -- Highlight border on focus
-            local Border = Create("Frame", {
-                Parent           = InputBox,
-                Size             = UDim2.new(1, 0, 1, 0),
+            local KeyBtn = Create("TextButton", {
+                Parent           = frame,
+                Position         = UDim2.new(1, -98, 0.5, -12),
+                Size             = UDim2.new(0, 88, 0, 24),
+                BackgroundColor3 = Aurora.Config.Theme.Surface,
+                Text             = current == Enum.KeyCode.Unknown and "None" or current.Name,
+                TextColor3       = Aurora.Config.Theme.Primary,
+                Font             = Aurora.Config.FontBold,
+                TextSize         = 12,
+                AutoButtonColor  = false,
+                BorderSizePixel  = 0,
+            })
+            AddCorner(KeyBtn, UDim.new(0, 4))
+
+            local keyCon  -- connection for capturing the next key
+
+            local function StopListening()
+                listening = false
+                KeyBtn.BackgroundColor3 = Aurora.Config.Theme.Surface
+                KeyBtn.TextColor3       = Aurora.Config.Theme.Primary
+                if keyCon then keyCon:Disconnect() keyCon = nil end
+            end
+
+            local function StartListening()
+                listening = true
+                KeyBtn.Text            = "..."
+                KeyBtn.BackgroundColor3 = Aurora.Config.Theme.Primary
+                KeyBtn.TextColor3       = Aurora.Config.Theme.Text
+
+                keyCon = UserInputService.InputBegan:Connect(function(inp, processed)
+                    if processed then return end
+                    if inp.UserInputType == Enum.UserInputType.Keyboard then
+                        current       = inp.KeyCode
+                        KeyBtn.Text   = inp.KeyCode.Name
+                        if cfg.Callback then cfg.Callback(current) end
+                        OnChanged:Fire(current)
+                        StopListening()
+                    end
+                end)
+            end
+
+            KeyBtn.MouseButton1Click:Connect(function()
+                if listening then StopListening() else StartListening() end
+            end)
+
+            -- Cancel on click elsewhere
+            local cancelCon = UserInputService.InputBegan:Connect(function(inp)
+                if listening and inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                    StopListening()
+                    KeyBtn.Text = current == Enum.KeyCode.Unknown and "None" or current.Name
+                end
+            end)
+            table.insert(windowConnections, cancelCon)
+
+            return RegisterElement({
+                Frame     = frame,
+                OnChanged = OnChanged,
+                GetValue  = function() return current end,
+                SetValue  = function(key)
+                    current   = key
+                    KeyBtn.Text = key == Enum.KeyCode.Unknown and "None" or key.Name
+                end,
+            }, frame)
+        end
+
+        -- ── ColorPicker ───────────────────────  NEW
+
+        function Tab:CreateColorPicker(cfg)
+            cfg = cfg or {}
+            local color     = cfg.Default or Color3.fromRGB(255, 255, 255)
+            local expanded  = false
+            local OnChanged = Signal.new()
+
+            -- Convert Color3 → H,S,V
+            local function toHSV(c)
+                return Color3.toHSV(c)
+            end
+
+            local h, s, v = toHSV(color)
+
+            local PICKER_H = 140  -- expanded panel height
+
+            local PickerFrame = Create("Frame", {
+                Parent           = TabContent,
+                Size             = UDim2.new(1, 0, 0, 36),
+                BackgroundColor3 = Aurora.Config.Theme.Background,
+                BorderSizePixel  = 0,
+                ClipsDescendants = true,
+            })
+            AddCorner(PickerFrame, UDim.new(0, 4))
+
+            -- Header row
+            Create("TextLabel", {
+                Parent             = PickerFrame,
+                Position           = UDim2.new(0, 12, 0, 0),
+                Size               = UDim2.new(1, -56, 0, 36),
+                BackgroundTransparency = 1,
+                Text               = cfg.Text or "Color",
+                TextColor3         = Aurora.Config.Theme.Text,
+                Font               = Aurora.Config.FontMedium,
+                TextSize           = 14,
+                TextXAlignment     = Enum.TextXAlignment.Left,
+            })
+
+            local Preview = Create("Frame", {
+                Parent           = PickerFrame,
+                Position         = UDim2.new(1, -42, 0.5, -10),
+                Size             = UDim2.new(0, 28, 0, 20),
+                BackgroundColor3 = color,
+                BorderSizePixel  = 0,
+            })
+            AddCorner(Preview, UDim.new(0, 4))
+
+            local ToggleBtn = Create("TextButton", {
+                Parent             = PickerFrame,
+                Size               = UDim2.new(1, 0, 0, 36),
+                BackgroundTransparency = 1,
+                Text               = "",
+            })
+
+            -- ── Expanded panel ────────────────
+
+            local Panel = Create("Frame", {
+                Parent           = PickerFrame,
+                Position         = UDim2.new(0, 8, 0, 42),
+                Size             = UDim2.new(1, -16, 0, PICKER_H - 48),
                 BackgroundTransparency = 1,
                 BorderSizePixel  = 0,
             })
-            AddCorner(Border, UDim.new(0, 4))
 
-            InputBox.Focused:Connect(function()
-                Tween(InputBox, {BackgroundColor3 = Color3.fromRGB(32, 32, 40)}, 0.15)
+            -- Saturation / Value 2D pad
+            local SVPad = Create("ImageButton", {
+                Parent           = Panel,
+                Position         = UDim2.new(0, 0, 0, 0),
+                Size             = UDim2.new(1, -28, 0, 68),
+                Image            = "rbxassetid://698052001", -- SV gradient
+                ImageColor3      = Color3.fromHSV(h, 1, 1),
+                BackgroundColor3 = Color3.new(1, 1, 1),
+                BorderSizePixel  = 0,
+                AutoButtonColor  = false,
+            })
+            AddCorner(SVPad, UDim.new(0, 4))
+
+            local SVCursor = Create("Frame", {
+                Parent           = SVPad,
+                Size             = UDim2.new(0, 10, 0, 10),
+                AnchorPoint      = Vector2.new(0.5, 0.5),
+                Position         = UDim2.new(s, 0, 1 - v, 0),
+                BackgroundColor3 = Color3.new(1, 1, 1),
+                BorderSizePixel  = 0,
+            })
+            AddCorner(SVCursor, UDim.new(1, 0))
+
+            -- Hue bar (vertical, right side)
+            local HueBar = Create("ImageButton", {
+                Parent           = Panel,
+                Position         = UDim2.new(1, -22, 0, 0),
+                Size             = UDim2.new(0, 16, 0, 68),
+                Image            = "rbxassetid://698053677", -- hue gradient
+                BackgroundColor3 = Color3.new(1, 1, 1),
+                BorderSizePixel  = 0,
+                AutoButtonColor  = false,
+            })
+            AddCorner(HueBar, UDim.new(0, 4))
+
+            local HueCursor = Create("Frame", {
+                Parent           = HueBar,
+                Size             = UDim2.new(1, 0, 0, 4),
+                AnchorPoint      = Vector2.new(0, 0.5),
+                Position         = UDim2.new(0, 0, h, 0),
+                BackgroundColor3 = Color3.new(1, 1, 1),
+                BorderSizePixel  = 0,
+            })
+            AddCorner(HueCursor, UDim.new(1, 0))
+
+            -- Hex input
+            local HexInput = Create("TextBox", {
+                Parent           = Panel,
+                Position         = UDim2.new(0, 0, 0, 74),
+                Size             = UDim2.new(1, 0, 0, 22),
+                BackgroundColor3 = Aurora.Config.Theme.Surface,
+                BorderSizePixel  = 0,
+                Text             = string.format("#%02X%02X%02X",
+                    math.round(color.R * 255),
+                    math.round(color.G * 255),
+                    math.round(color.B * 255)),
+                TextColor3       = Aurora.Config.Theme.Text,
+                Font             = Aurora.Config.Font,
+                TextSize         = 12,
+                ClearTextOnFocus = false,
+            })
+            AddCorner(HexInput, UDim.new(0, 4))
+            Create("UIPadding", {Parent = HexInput, PaddingLeft = UDim.new(0, 8)})
+
+            local function Commit()
+                color = Color3.fromHSV(h, s, v)
+                Preview.BackgroundColor3 = color
+                SVPad.ImageColor3        = Color3.fromHSV(h, 1, 1)
+                SVCursor.Position        = UDim2.new(s, 0, 1 - v, 0)
+                HueCursor.Position       = UDim2.new(0, 0, h, 0)
+                HexInput.Text = string.format("#%02X%02X%02X",
+                    math.round(color.R * 255),
+                    math.round(color.G * 255),
+                    math.round(color.B * 255))
+                if cfg.Callback then cfg.Callback(color) end
+                OnChanged:Fire(color)
+            end
+
+            -- SV pad drag
+            local svDrag = false
+            SVPad.InputBegan:Connect(function(inp)
+                if inp.UserInputType == Enum.UserInputType.MouseButton1 then svDrag = true end
             end)
-            InputBox.FocusLost:Connect(function(enterPressed)
-                Tween(InputBox, {BackgroundColor3 = Aurora.Config.Theme.Surface}, 0.15)
-                if enterPressed then callback(InputBox.Text) end
+            local c1 = UserInputService.InputChanged:Connect(function(inp)
+                if svDrag and inp.UserInputType == Enum.UserInputType.MouseMovement then
+                    s = math.clamp((inp.Position.X - SVPad.AbsolutePosition.X) / SVPad.AbsoluteSize.X, 0, 1)
+                    v = 1 - math.clamp((inp.Position.Y - SVPad.AbsolutePosition.Y) / SVPad.AbsoluteSize.Y, 0, 1)
+                    Commit()
+                end
+            end)
+            local c2 = UserInputService.InputEnded:Connect(function(inp)
+                if inp.UserInputType == Enum.UserInputType.MouseButton1 then svDrag = false end
+            end)
+            table.insert(windowConnections, c1)
+            table.insert(windowConnections, c2)
+
+            -- Hue bar drag
+            local hueDrag = false
+            HueBar.InputBegan:Connect(function(inp)
+                if inp.UserInputType == Enum.UserInputType.MouseButton1 then hueDrag = true end
+            end)
+            local c3 = UserInputService.InputChanged:Connect(function(inp)
+                if hueDrag and inp.UserInputType == Enum.UserInputType.MouseMovement then
+                    h = math.clamp((inp.Position.Y - HueBar.AbsolutePosition.Y) / HueBar.AbsoluteSize.Y, 0, 1)
+                    Commit()
+                end
+            end)
+            local c4 = UserInputService.InputEnded:Connect(function(inp)
+                if inp.UserInputType == Enum.UserInputType.MouseButton1 then hueDrag = false end
+            end)
+            table.insert(windowConnections, c3)
+            table.insert(windowConnections, c4)
+
+            -- Hex input
+            HexInput.FocusLost:Connect(function(enter)
+                if not enter then return end
+                local hex = HexInput.Text:gsub("#", "")
+                if #hex == 6 then
+                    local r = tonumber(hex:sub(1,2), 16)
+                    local g = tonumber(hex:sub(3,4), 16)
+                    local b = tonumber(hex:sub(5,6), 16)
+                    if r and g and b then
+                        color = Color3.fromRGB(r, g, b)
+                        h, s, v = toHSV(color)
+                        Commit()
+                    end
+                end
             end)
 
-            table.insert(Tab.Elements, frame)
-            return {
-                Frame    = frame,
-                GetValue = function() return InputBox.Text end,
-                SetValue = function(val) InputBox.Text = val end,
-            }
+            -- Toggle expand
+            ToggleBtn.MouseButton1Click:Connect(function()
+                expanded = not expanded
+                Tween(PickerFrame, {Size = UDim2.new(1, 0, 0, expanded and PICKER_H or 36)}, 0.25)
+            end)
+
+            return RegisterElement({
+                Frame     = PickerFrame,
+                OnChanged = OnChanged,
+                GetValue  = function() return color end,
+                SetValue  = function(c)
+                    color = c
+                    h, s, v = toHSV(c)
+                    Commit()
+                end,
+            }, PickerFrame)
         end
 
         -- ── Label ─────────────────────────────
@@ -846,7 +1138,6 @@ function Aurora:CreateWindow(config)
                 Size               = UDim2.new(1, 0, 0, 22),
                 BackgroundTransparency = 1,
             })
-
             local lbl = Create("TextLabel", {
                 Parent             = frame,
                 Size               = UDim2.new(1, 0, 1, 0),
@@ -857,9 +1148,10 @@ function Aurora:CreateWindow(config)
                 TextSize           = 12,
                 TextXAlignment     = Enum.TextXAlignment.Left,
             })
-
-            table.insert(Tab.Elements, frame)
-            return {Frame = frame, SetText = function(t) lbl.Text = t end}
+            return RegisterElement({
+                Frame   = frame,
+                SetText = function(t) lbl.Text = t end,
+            }, frame)
         end
 
         -- ── Section ───────────────────────────
@@ -870,19 +1162,17 @@ function Aurora:CreateWindow(config)
                 Size               = UDim2.new(1, 0, 0, 28),
                 BackgroundTransparency = 1,
             })
-
             Create("TextLabel", {
                 Parent             = frame,
-                Position           = UDim2.new(0, 0, 0, 0),
                 Size               = UDim2.new(1, 0, 1, -1),
                 BackgroundTransparency = 1,
-                Text               = sectionText or "Section",
+                Text               = (sectionText or "Section"):upper(),
                 TextColor3         = Aurora.Config.Theme.Primary,
                 Font               = Aurora.Config.FontBold,
-                TextSize           = 12,
+                TextSize           = 11,
                 TextXAlignment     = Enum.TextXAlignment.Left,
             })
-
+            -- Higher contrast divider
             Create("Frame", {
                 Parent           = frame,
                 Position         = UDim2.new(0, 0, 1, -1),
@@ -890,9 +1180,7 @@ function Aurora:CreateWindow(config)
                 BackgroundColor3 = Aurora.Config.Theme.Border,
                 BorderSizePixel  = 0,
             })
-
-            table.insert(Tab.Elements, frame)
-            return frame
+            return RegisterElement({Frame = frame}, frame)
         end
 
         -- Auto-select first tab
@@ -907,8 +1195,7 @@ function Aurora:CreateWindow(config)
         return Tab
     end
 
-    -- Draggable — disconnect stored for cleanup
-    local dragDisconnect = MakeDraggable(MainFrame, TitleBar)
+    local _dragDisconnect = MakeDraggable(MainFrame, TitleBar)
 
     -- Intro animation
     MainFrame.Size     = UDim2.new(0, 0, 0, 0)
@@ -922,27 +1209,22 @@ function Aurora:CreateWindow(config)
 end
 
 -- ─────────────────────────────────────────────
---  Notification System  (queued, non-overlapping)
+--  Notification system
 -- ─────────────────────────────────────────────
 
-local _notifGui -- single ScreenGui for all notifications
+local _notifGui
 
-function Aurora:Notify(notifyConfig)
-    notifyConfig = notifyConfig or {}
-    local title      = notifyConfig.Title    or "Notification"
-    local message    = notifyConfig.Message  or ""
-    local notifType  = notifyConfig.Type     or "Info"
-    local duration   = notifyConfig.Duration or 3
-
+function Aurora:Notify(cfg)
+    cfg = cfg or {}
     local colorMap = {
         Info    = Aurora.Config.Theme.Primary,
         Success = Aurora.Config.Theme.Success,
         Warning = Aurora.Config.Theme.Warning,
         Error   = Aurora.Config.Theme.Error,
     }
-    local color = colorMap[notifType] or colorMap.Info
+    local color    = colorMap[cfg.Type or "Info"] or colorMap.Info
+    local duration = cfg.Duration or 3
 
-    -- Shared container
     if not _notifGui or not _notifGui.Parent then
         _notifGui = Create("ScreenGui", {
             Name         = "AuroraNotifications",
@@ -954,87 +1236,62 @@ function Aurora:Notify(notifyConfig)
     local slotIndex = #notifQueue + 1
     local posY      = -(slotIndex * (NOTIF_HEIGHT + NOTIF_GAP))
 
-    local NotifFrame = Create("Frame", {
-        Name             = "Notification",
+    local frame = Create("Frame", {
         Parent           = _notifGui,
-        Position         = UDim2.new(1, 20, 1, posY),   -- starts off-screen right
+        Position         = UDim2.new(1, 20, 1, posY),
         Size             = UDim2.new(0, 280, 0, NOTIF_HEIGHT),
         BackgroundColor3 = Aurora.Config.Theme.Surface,
         BorderSizePixel  = 0,
     })
-    AddCorner(NotifFrame)
-    AddShadow(NotifFrame, 0.8)
+    AddCorner(frame)
+    AddShadow(frame, 0.8)
 
-    -- Accent bar
     local AccentBar = Create("Frame", {
-        Parent           = NotifFrame,
-        Size             = UDim2.new(0, 4, 1, 0),
-        BackgroundColor3 = color,
-        BorderSizePixel  = 0,
+        Parent = frame, Size = UDim2.new(0, 4, 1, 0),
+        BackgroundColor3 = color, BorderSizePixel = 0,
     })
     AddCorner(AccentBar, UDim.new(0, 4))
-    -- Patch right side of rounded corner so it flush-fills
     Create("Frame", {
-        Parent           = AccentBar,
-        Position         = UDim2.new(0.5, 0, 0, 0),
-        Size             = UDim2.new(0.5, 0, 1, 0),
-        BackgroundColor3 = color,
-        BorderSizePixel  = 0,
+        Parent = AccentBar, Position = UDim2.new(0.5, 0, 0, 0),
+        Size = UDim2.new(0.5, 0, 1, 0),
+        BackgroundColor3 = color, BorderSizePixel = 0,
     })
 
     Create("TextLabel", {
-        Parent             = NotifFrame,
-        Position           = UDim2.new(0, 16, 0, 10),
-        Size               = UDim2.new(1, -32, 0, 20),
-        BackgroundTransparency = 1,
-        Text               = title,
-        TextColor3         = Aurora.Config.Theme.Text,
-        Font               = Aurora.Config.FontBold,
-        TextSize           = 14,
-        TextXAlignment     = Enum.TextXAlignment.Left,
+        Parent = frame, Position = UDim2.new(0, 16, 0, 10),
+        Size = UDim2.new(1, -32, 0, 20), BackgroundTransparency = 1,
+        Text = cfg.Title or "Notification", TextColor3 = Aurora.Config.Theme.Text,
+        Font = Aurora.Config.FontBold, TextSize = 14,
+        TextXAlignment = Enum.TextXAlignment.Left,
     })
-
     Create("TextLabel", {
-        Parent             = NotifFrame,
-        Position           = UDim2.new(0, 16, 0, 32),
-        Size               = UDim2.new(1, -32, 0, 36),
-        BackgroundTransparency = 1,
-        Text               = message,
-        TextColor3         = Aurora.Config.Theme.TextMuted,
-        Font               = Aurora.Config.Font,
-        TextSize           = 13,
-        TextXAlignment     = Enum.TextXAlignment.Left,
-        TextWrapped        = true,
+        Parent = frame, Position = UDim2.new(0, 16, 0, 32),
+        Size = UDim2.new(1, -32, 0, 36), BackgroundTransparency = 1,
+        Text = cfg.Message or "", TextColor3 = Aurora.Config.Theme.TextMuted,
+        Font = Aurora.Config.Font, TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true,
     })
 
-    -- Progress bar
     local Progress = Create("Frame", {
-        Parent           = NotifFrame,
-        Position         = UDim2.new(0, 0, 1, -2),
-        Size             = UDim2.new(1, 0, 0, 2),
-        BackgroundColor3 = color,
-        BorderSizePixel  = 0,
+        Parent = frame, Position = UDim2.new(0, 0, 1, -2),
+        Size = UDim2.new(1, 0, 0, 2),
+        BackgroundColor3 = color, BorderSizePixel = 0,
     })
 
-    -- Register in queue
-    local entry = {frame = NotifFrame}
+    local entry = {frame = frame}
     table.insert(notifQueue, entry)
 
-    -- Slide in
-    Tween(NotifFrame, {Position = UDim2.new(1, NOTIF_X, 1, posY)}, 0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
-    Tween(Progress,   {Size = UDim2.new(0, 0, 0, 2)}, duration, Enum.EasingStyle.Linear)
+    Tween(frame,    {Position = UDim2.new(1, NOTIF_X, 1, posY)}, 0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+    Tween(Progress, {Size = UDim2.new(0, 0, 0, 2)}, duration, Enum.EasingStyle.Linear)
 
     task.delay(duration, function()
-        -- Slide out
-        Tween(NotifFrame, {Position = UDim2.new(1, 20, 1, posY)}, 0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+        Tween(frame, {Position = UDim2.new(1, 20, 1, posY)}, 0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
         task.wait(0.35)
-        NotifFrame:Destroy()
-
-        -- Remove from queue and restack remaining
+        frame:Destroy()
         for i, e in ipairs(notifQueue) do
             if e == entry then table.remove(notifQueue, i) break end
         end
-        _repositionNotifs()
+        RepositionNotifs()
     end)
 end
 
