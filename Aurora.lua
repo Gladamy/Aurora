@@ -541,7 +541,7 @@ function Aurora:CreateWindow(config)
                         end
                     end
                     if not overlay then
-                        overlay = Create("Frame", {
+                        overlay = Create("TextButton", {
                             Name               = "_DisabledOverlay",
                             Parent             = frame,
                             Size               = UDim2.new(1, 0, 1, 0),
@@ -549,6 +549,8 @@ function Aurora:CreateWindow(config)
                             BackgroundTransparency = 0.5,
                             BorderSizePixel    = 0,
                             ZIndex             = 99,
+                            Text               = "",
+                            AutoButtonColor    = false,
                         })
                         AddCorner(overlay, UDim.new(0, 4))
                     end
