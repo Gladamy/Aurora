@@ -1,6 +1,6 @@
 --// Aurora UI Library
 --// A minimalistic, beautiful UI library for Roblox
---// Version: 4.0.0
+--// Version: 5.0.0
 
 local Aurora = {}
 local TweenService     = game:GetService("TweenService")
@@ -46,11 +46,12 @@ local Signal = {}
 Signal.__index = Signal
 
 function Signal.new()
-    return setmetatable({_handlers = {}}, Signal)
+    return setmetatable({_handlers = {}, _counter = 0}, Signal)
 end
 
 function Signal:Connect(fn)
-    local id = #self._handlers + 1
+    self._counter = self._counter + 1
+    local id = self._counter
     self._handlers[id] = fn
     return {
         Disconnect = function()
@@ -299,6 +300,24 @@ function Aurora:CreateWindow(config)
     })
     AddCorner(ContentContainer)
 
+    -- Subtle bottom fade so sparse tabs don't end abruptly
+    local FadeGradient = Create("Frame", {
+        Parent             = ContentContainer,
+        Position           = UDim2.new(0, 0, 1, -28),
+        Size               = UDim2.new(1, 0, 0, 28),
+        BackgroundColor3   = Aurora.Config.Theme.Surface,
+        BorderSizePixel    = 0,
+        ZIndex             = 10,
+    })
+    Create("UIGradient", {
+        Parent       = FadeGradient,
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(1, 0),
+        }),
+        Rotation = 90,
+    })
+
     --// Window object
     local Window = {
         ScreenGui        = ScreenGui,
@@ -455,20 +474,64 @@ function Aurora:CreateWindow(config)
 
         local function RegisterElement(element, frame)
             if #Tab.Elements == 0 then
-                EmptyState.Visible = false  -- hide on first element
+                EmptyState.Visible = false
             end
             table.insert(Tab.Elements, element)
             Tab.OnElementAdded:Fire(element)
-            -- Expose Destroy on every element
+
             element.Destroy = function()
                 frame:Destroy()
                 for i, e in ipairs(Tab.Elements) do
                     if e == element then table.remove(Tab.Elements, i) break end
                 end
-                if #Tab.Elements == 0 then
-                    EmptyState.Visible = true
+                if #Tab.Elements == 0 then EmptyState.Visible = true end
+            end
+
+            -- SetVisible: show/hide without removing from Elements list
+            element.SetVisible = function(visible)
+                frame.Visible = visible
+            end
+
+            -- SetEnabled: dims and blocks interaction when false
+            element.SetEnabled = function(enabled)
+                -- Overlay that absorbs all input when disabled
+                local overlay = frame:FindFirstChild("_DisabledOverlay")
+                if enabled then
+                    if overlay then overlay:Destroy() end
+                    Tween(frame, {BackgroundTransparency = 0}, 0.15)
+                    -- Restore text colours on all labels inside
+                    for _, lbl in ipairs(frame:GetDescendants()) do
+                        if lbl:IsA("TextLabel") or lbl:IsA("TextButton") or lbl:IsA("TextBox") then
+                            if lbl:GetAttribute("_origColor") then
+                                lbl.TextColor3 = Color3.fromHex(lbl:GetAttribute("_origColor"))
+                            end
+                        end
+                    end
+                else
+                    -- Store original colours once
+                    for _, lbl in ipairs(frame:GetDescendants()) do
+                        if lbl:IsA("TextLabel") or lbl:IsA("TextButton") or lbl:IsA("TextBox") then
+                            if not lbl:GetAttribute("_origColor") then
+                                lbl:SetAttribute("_origColor", lbl.TextColor3:ToHex())
+                            end
+                            Tween(lbl, {TextColor3 = Aurora.Config.Theme.Border}, 0.15)
+                        end
+                    end
+                    if not overlay then
+                        overlay = Create("Frame", {
+                            Name               = "_DisabledOverlay",
+                            Parent             = frame,
+                            Size               = UDim2.new(1, 0, 1, 0),
+                            BackgroundColor3   = Aurora.Config.Theme.Background,
+                            BackgroundTransparency = 0.5,
+                            BorderSizePixel    = 0,
+                            ZIndex             = 99,
+                        })
+                        AddCorner(overlay, UDim.new(0, 4))
+                    end
                 end
             end
+
             return element
         end
 
@@ -794,7 +857,171 @@ function Aurora:CreateWindow(config)
             }, DropdownFrame)
         end
 
-        -- ── MultiSelect ───────────────────────
+        -- ── SearchDropdown ────────────────────
+
+        function Tab:CreateSearchDropdown(cfg)
+            cfg = cfg or {}
+            local options   = cfg.Options or {}
+            local selected  = cfg.Default or "Select..."
+            local expanded  = false
+            local OnChanged = Signal.new()
+            local labelText = cfg.Text or "Search"
+            local MAX_VISIBLE = cfg.MaxVisible or 6  -- max rows before scroll
+            local ROW_H = 30
+
+            local DropFrame = Create("Frame", {
+                Parent           = TabContent,
+                Size             = UDim2.new(1, 0, 0, 36),
+                BackgroundColor3 = Aurora.Config.Theme.Background,
+                BorderSizePixel  = 0,
+                ClipsDescendants = true,
+            })
+            AddCorner(DropFrame, UDim.new(0, 4))
+
+            local HeaderLabel = Create("TextLabel", {
+                Parent             = DropFrame,
+                Position           = UDim2.new(0, 12, 0, 0),
+                Size               = UDim2.new(1, -38, 0, 36),
+                BackgroundTransparency = 1,
+                Text               = labelText .. ": " .. selected,
+                TextColor3         = Aurora.Config.Theme.Text,
+                Font               = Aurora.Config.FontMedium,
+                TextSize           = 14,
+                TextXAlignment     = Enum.TextXAlignment.Left,
+                TextTruncate       = Enum.TextTruncate.AtEnd,
+            })
+
+            local Arrow = Create("TextLabel", {
+                Parent             = DropFrame,
+                Position           = UDim2.new(1, -28, 0, 0),
+                Size               = UDim2.new(0, 20, 0, 36),
+                BackgroundTransparency = 1,
+                Text               = "▼",
+                TextColor3         = Aurora.Config.Theme.TextMuted,
+                Font               = Aurora.Config.FontBold,
+                TextSize           = 11,
+            })
+
+            -- Search input (shown when expanded)
+            local SearchBox = Create("TextBox", {
+                Parent             = DropFrame,
+                Position           = UDim2.new(0, 6, 0, 38),
+                Size               = UDim2.new(1, -12, 0, 24),
+                BackgroundColor3   = Aurora.Config.Theme.Surface,
+                BorderSizePixel    = 0,
+                Text               = "",
+                PlaceholderText    = "Search...",
+                PlaceholderColor3  = Aurora.Config.Theme.TextMuted,
+                TextColor3         = Aurora.Config.Theme.Text,
+                Font               = Aurora.Config.Font,
+                TextSize           = 12,
+                ClearTextOnFocus   = true,
+            })
+            AddCorner(SearchBox, UDim.new(0, 4))
+            Create("UIPadding", {Parent = SearchBox, PaddingLeft = UDim.new(0, 8)})
+
+            -- Scrollable options list
+            local ListFrame = Create("ScrollingFrame", {
+                Parent               = DropFrame,
+                Position             = UDim2.new(0, 0, 0, 66),
+                Size                 = UDim2.new(1, 0, 0, math.min(#options, MAX_VISIBLE) * ROW_H),
+                BackgroundColor3     = Aurora.Config.Theme.Surface,
+                BorderSizePixel      = 0,
+                ScrollBarThickness   = 2,
+                ScrollBarImageColor3 = Aurora.Config.Theme.Border,
+                AutomaticCanvasSize  = Enum.AutomaticSize.Y,
+                CanvasSize           = UDim2.new(0, 0, 0, 0),
+                ClipsDescendants     = true,
+            })
+            Create("UIListLayout", {Parent = ListFrame, SortOrder = Enum.SortOrder.LayoutOrder})
+
+            -- Build option buttons, store references for filtering
+            local optionBtns = {}
+            for i, option in ipairs(options) do
+                local ob = Create("TextButton", {
+                    Parent           = ListFrame,
+                    Size             = UDim2.new(1, 0, 0, ROW_H),
+                    BackgroundColor3 = Aurora.Config.Theme.Surface,
+                    Text             = option,
+                    TextColor3       = Aurora.Config.Theme.TextMuted,
+                    Font             = Aurora.Config.FontMedium,
+                    TextSize         = 13,
+                    LayoutOrder      = i,
+                    AutoButtonColor  = false,
+                })
+                ob.MouseEnter:Connect(function()
+                    Tween(ob, {BackgroundColor3 = Aurora.Config.Theme.Background, TextColor3 = Aurora.Config.Theme.Text}, 0.15)
+                end)
+                ob.MouseLeave:Connect(function()
+                    Tween(ob, {BackgroundColor3 = Aurora.Config.Theme.Surface, TextColor3 = Aurora.Config.Theme.TextMuted}, 0.15)
+                end)
+                ob.MouseButton1Click:Connect(function()
+                    selected          = option
+                    HeaderLabel.Text  = labelText .. ": " .. option
+                    SearchBox.Text    = ""
+                    if cfg.Callback then cfg.Callback(option) end
+                    OnChanged:Fire(option)
+                    -- Restore all rows and collapse
+                    for _, btn in ipairs(optionBtns) do btn.Visible = true end
+                    expanded = false
+                    Tween(DropFrame, {Size = UDim2.new(1, 0, 0, 36)}, 0.2)
+                    Tween(Arrow, {Rotation = 0}, 0.2)
+                end)
+                optionBtns[i] = ob
+            end
+
+            -- Live filter on search text change
+            SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+                local query = SearchBox.Text:lower()
+                local visible = 0
+                for i, opt in ipairs(options) do
+                    local show = query == "" or opt:lower():find(query, 1, true) ~= nil
+                    optionBtns[i].Visible = show
+                    if show then visible = visible + 1 end
+                end
+                -- Resize list to visible rows (capped at MAX_VISIBLE)
+                local newH = math.min(visible, MAX_VISIBLE) * ROW_H
+                ListFrame.Size = UDim2.new(1, 0, 0, newH)
+                local totalH = 66 + newH
+                DropFrame.Size = UDim2.new(1, 0, 0, totalH)
+            end)
+
+            local function TotalExpandedH()
+                return 66 + math.min(#options, MAX_VISIBLE) * ROW_H
+            end
+
+            -- Toggle on header click
+            Create("TextButton", {
+                Parent             = DropFrame,
+                Size               = UDim2.new(1, 0, 0, 36),
+                BackgroundTransparency = 1,
+                Text               = "",
+            }).MouseButton1Click:Connect(function()
+                expanded = not expanded
+                if expanded then
+                    Tween(DropFrame, {Size = UDim2.new(1, 0, 0, TotalExpandedH())}, 0.2)
+                    Tween(Arrow, {Rotation = 180}, 0.2)
+                    SearchBox.Text = ""
+                    for _, btn in ipairs(optionBtns) do btn.Visible = true end
+                    ListFrame.Size = UDim2.new(1, 0, 0, math.min(#options, MAX_VISIBLE) * ROW_H)
+                else
+                    Tween(DropFrame, {Size = UDim2.new(1, 0, 0, 36)}, 0.2)
+                    Tween(Arrow, {Rotation = 0}, 0.2)
+                end
+            end)
+
+            return RegisterElement({
+                Frame     = DropFrame,
+                OnChanged = OnChanged,
+                GetValue  = function() return selected end,
+                SetValue  = function(val)
+                    if table.find(options, val) then
+                        selected         = val
+                        HeaderLabel.Text = labelText .. ": " .. val
+                    end
+                end,
+            }, DropFrame)
+        end
 
         function Tab:CreateMultiSelect(cfg)
             cfg = cfg or {}
