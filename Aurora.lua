@@ -1,6 +1,6 @@
 --// Aurora UI Library
 --// A minimalistic, beautiful UI library for Roblox
---// Version: 6.0.0
+--// Version: 6.1.0
 
 local Aurora = {}
 local TweenService     = game:GetService("TweenService")
@@ -62,7 +62,10 @@ end
 
 function Signal:Fire(...)
     for _, fn in pairs(self._handlers) do
-        pcall(fn, ...)
+        local ok, err = pcall(fn, ...)
+        if not ok then
+            warn("[Aurora Signal] Callback error: " .. tostring(err))
+        end
     end
 end
 
@@ -148,6 +151,15 @@ local function MakeDraggable(frame, handle)
 
     return conns   -- array of RBXScriptConnections, same type as everything else
 end
+
+-- ─────────────────────────────────────────────
+--  Dropdown collapse registry
+--  Weak keys so frames can be GC'd freely.
+--  CreateDropdown / CreateSearchDropdown register
+--  a collapse function here; SetEnabled calls it.
+-- ─────────────────────────────────────────────
+
+local _dropdownCollapse = setmetatable({}, { __mode = "k" })
 
 -- ─────────────────────────────────────────────
 --  Notification queue
@@ -260,14 +272,20 @@ function Aurora:CreateWindow(config)
     end)
 
     CloseBtn.MouseButton1Click:Connect(function()
-        local cx = MainFrame.Position.X.Offset + size.X.Offset / 2
-        local cy = MainFrame.Position.Y.Offset + size.Y.Offset / 2
+        -- Use AbsolutePosition so the collapse-to-centre is correct
+        -- regardless of where the window has been dragged
+        local absPos  = MainFrame.AbsolutePosition
+        local absSize = MainFrame.AbsoluteSize
+        local cx = absPos.X + absSize.X / 2
+        local cy = absPos.Y + absSize.Y / 2
         Tween(MainFrame, {
             Size     = UDim2.new(0, 0, 0, 0),
-            Position = UDim2.new(MainFrame.Position.X.Scale, cx, MainFrame.Position.Y.Scale, cy),
+            Position = UDim2.new(0, cx, 0, cy),
         }, 0.3)
         task.wait(0.3)
-        for _, c in ipairs(windowConnections) do c:Disconnect() end
+        for _, c in ipairs(windowConnections) do
+            if c and c.Disconnect then c:Disconnect() end
+        end
         ScreenGui:Destroy()
     end)
 
@@ -522,16 +540,20 @@ function Aurora:CreateWindow(config)
                 if enabled then
                     if overlay then overlay:Destroy() end
                     Tween(frame, {BackgroundTransparency = 0}, 0.15)
-                    -- Restore text colours on all labels inside
+                    -- Restore text colours and clear cached value
                     for _, lbl in ipairs(frame:GetDescendants()) do
                         if lbl:IsA("TextLabel") or lbl:IsA("TextButton") or lbl:IsA("TextBox") then
                             if lbl:GetAttribute("_origColor") then
                                 lbl.TextColor3 = Color3.fromHex(lbl:GetAttribute("_origColor"))
+                                lbl:SetAttribute("_origColor", nil)  -- clear so theme changes apply correctly next time
                             end
                         end
                     end
                 else
-                    -- Store original colours once
+                    -- Collapse any open dropdown before locking
+                    local collapse = _dropdownCollapse[frame]
+                    if collapse then collapse() end
+                    -- Store original colours once, dim all text
                     for _, lbl in ipairs(frame:GetDescendants()) do
                         if lbl:IsA("TextLabel") or lbl:IsA("TextButton") or lbl:IsA("TextBox") then
                             if not lbl:GetAttribute("_origColor") then
@@ -869,6 +891,15 @@ function Aurora:CreateWindow(config)
                 Tween(Arrow, {Rotation = expanded and 180 or 0}, 0.2)
             end)
 
+            -- Register collapse so SetEnabled(false) can close an open dropdown
+            _dropdownCollapse[DropdownFrame] = function()
+                if expanded then
+                    expanded = false
+                    Tween(DropdownFrame, {Size = UDim2.new(1, 0, 0, 36)}, 0.2)
+                    Tween(Arrow, {Rotation = 0}, 0.2)
+                end
+            end
+
             return RegisterElement({
                 Frame     = DropdownFrame,
                 OnChanged = OnChanged,
@@ -1034,6 +1065,15 @@ function Aurora:CreateWindow(config)
                     Tween(Arrow, {Rotation = 0}, 0.2)
                 end
             end)
+
+            -- Register collapse so SetEnabled(false) can close an open search dropdown
+            _dropdownCollapse[DropFrame] = function()
+                if expanded then
+                    expanded = false
+                    Tween(DropFrame, {Size = UDim2.new(1, 0, 0, 36)}, 0.2)
+                    Tween(Arrow, {Rotation = 0}, 0.2)
+                end
+            end
 
             return RegisterElement({
                 Frame     = DropFrame,
@@ -1776,12 +1816,12 @@ function Aurora:CreateWindow(config)
                 TextXAlignment     = Enum.TextXAlignment.Left,
             })
             return RegisterElement({
-                Frame   = frame,
-                SetText = function(t) lbl.Text = t end,
+                Frame    = frame,
+                GetValue = function() return lbl.Text end,
+                SetValue = function(t) lbl.Text = tostring(t) end,
+                SetText  = function(t) lbl.Text = tostring(t) end,
             }, frame)
         end
-
-        -- ── Section ───────────────────────────
 
         function Tab:CreateSection(sectionText)
             local frame = Create("Frame", {
@@ -1789,7 +1829,7 @@ function Aurora:CreateWindow(config)
                 Size               = UDim2.new(1, 0, 0, 28),
                 BackgroundTransparency = 1,
             })
-            Create("TextLabel", {
+            local sectionLabel = Create("TextLabel", {
                 Parent             = frame,
                 Size               = UDim2.new(1, 0, 1, -1),
                 BackgroundTransparency = 1,
@@ -1807,7 +1847,12 @@ function Aurora:CreateWindow(config)
                 BackgroundColor3 = Aurora.Config.Theme.Border,
                 BorderSizePixel  = 0,
             })
-            return RegisterElement({Frame = frame}, frame)
+            return RegisterElement({
+                Frame    = frame,
+                GetValue = function() return sectionLabel.Text end,
+                SetValue = function(t) sectionLabel.Text = tostring(t):upper() end,
+                SetText  = function(t) sectionLabel.Text = tostring(t):upper() end,
+            }, frame)
         end
 
         -- ── Table ─────────────────────────────
