@@ -204,28 +204,32 @@ function Aurora:CreateWindow(config)
     })
 
     --// Window control buttons (close / minimize)
-    local function MakeControlBtn(xOffset, color)
+    local function MakeControlBtn(xOffset, icon, bgColor)
         local btn = Create("TextButton", {
             Parent           = TitleBar,
-            Position         = UDim2.new(1, xOffset, 0.5, -9),
-            Size             = UDim2.new(0, 18, 0, 18),
-            BackgroundColor3 = color,
-            Text             = "",
+            Position         = UDim2.new(1, xOffset, 0.5, -10),
+            Size             = UDim2.new(0, 20, 0, 20),
+            BackgroundColor3 = Aurora.Config.Theme.Surface,
+            Text             = icon,
+            TextColor3       = bgColor,
+            Font             = Aurora.Config.FontBold,
+            TextSize         = 13,
             AutoButtonColor  = false,
+            BorderSizePixel  = 0,
         })
-        AddCorner(btn, UDim.new(1, 0))
+        AddCorner(btn, UDim.new(0, 4))
 
         btn.MouseEnter:Connect(function()
-            Tween(btn, {BackgroundColor3 = color:Lerp(Color3.new(1,1,1), 0.25)}, 0.15)
+            Tween(btn, {BackgroundColor3 = bgColor, TextColor3 = Aurora.Config.Theme.Text}, 0.15)
         end)
         btn.MouseLeave:Connect(function()
-            Tween(btn, {BackgroundColor3 = color}, 0.15)
+            Tween(btn, {BackgroundColor3 = Aurora.Config.Theme.Surface, TextColor3 = bgColor}, 0.15)
         end)
         return btn
     end
 
-    local CloseBtn    = MakeControlBtn(-28,  Aurora.Config.Theme.Error)
-    local MinimizeBtn = MakeControlBtn(-52,  Aurora.Config.Theme.Warning)
+    local CloseBtn    = MakeControlBtn(-28, "✕", Aurora.Config.Theme.Error)
+    local MinimizeBtn = MakeControlBtn(-54, "—", Aurora.Config.Theme.TextMuted)
 
     CloseBtn.MouseButton1Click:Connect(function()
         local cx = MainFrame.Position.X.Offset + size.X.Offset / 2
@@ -296,7 +300,7 @@ function Aurora:CreateWindow(config)
     -- Programmatically activate a tab
     function Window:SelectTab(index)
         local tab = self.Tabs[index]
-        if tab then tab.Button.MouseButton1Click:Fire() end
+        if tab and tab.Activate then tab.Activate() end
     end
 
     -- ─────────────────────────────────────────
@@ -380,6 +384,7 @@ function Aurora:CreateWindow(config)
             Button   = TabButton,
             Content  = TabContent,
             Elements = {},
+            Activate = nil,  -- set below after closure is defined
         }
 
         local function Activate()
@@ -405,6 +410,7 @@ function Aurora:CreateWindow(config)
             TabContent.CanvasPosition = Vector2.new(0, 0)
         end
 
+        Tab.Activate = Activate
         TabButton.MouseButton1Click:Connect(Activate)
 
         -- ─────────────────────────────────────
