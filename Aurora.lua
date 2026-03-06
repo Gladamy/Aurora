@@ -1,6 +1,6 @@
 --// Aurora UI Library
 --// A minimalistic, beautiful UI library for Roblox
---// Version: 3.1.0
+--// Version: 4.0.0
 
 local Aurora = {}
 local TweenService     = game:GetService("TweenService")
@@ -145,9 +145,7 @@ local function MakeDraggable(frame, handle)
         end
     end)
 
-    return function()
-        for _, c in ipairs(conns) do c:Disconnect() end
-    end
+    return conns   -- array of RBXScriptConnections, same type as everything else
 end
 
 -- ─────────────────────────────────────────────
@@ -319,7 +317,9 @@ function Aurora:CreateWindow(config)
     end
 
     function Window:Destroy()
-        for _, c in ipairs(windowConnections) do c:Disconnect() end
+        for _, c in ipairs(windowConnections) do
+            if c and c.Disconnect then c:Disconnect() end
+        end
         ScreenGui:Destroy()
     end
 
@@ -390,13 +390,25 @@ function Aurora:CreateWindow(config)
         })
 
         local Tab = {
-            Button   = TabButton,
-            Content  = TabContent,
-            Elements = {},
-            Activate = nil,
-            -- Events
+            Button         = TabButton,
+            Content        = TabContent,
+            Elements       = {},
+            Activate       = nil,
             OnElementAdded = Signal.new(),
         }
+
+        -- Empty state — visible until first element is added
+        local EmptyState = Create("TextLabel", {
+            Parent             = TabContent,
+            Size               = UDim2.new(1, 0, 0, 40),
+            BackgroundTransparency = 1,
+            Text               = "No elements yet.",
+            TextColor3         = Aurora.Config.Theme.Border,
+            Font               = Aurora.Config.Font,
+            TextSize           = 13,
+            TextXAlignment     = Enum.TextXAlignment.Center,
+            LayoutOrder        = 9999,
+        })
 
         local function Activate()
             if Window.ActiveTab == Tab then return end
@@ -442,6 +454,9 @@ function Aurora:CreateWindow(config)
         end
 
         local function RegisterElement(element, frame)
+            if #Tab.Elements == 0 then
+                EmptyState.Visible = false  -- hide on first element
+            end
             table.insert(Tab.Elements, element)
             Tab.OnElementAdded:Fire(element)
             -- Expose Destroy on every element
@@ -449,6 +464,9 @@ function Aurora:CreateWindow(config)
                 frame:Destroy()
                 for i, e in ipairs(Tab.Elements) do
                     if e == element then table.remove(Tab.Elements, i) break end
+                end
+                if #Tab.Elements == 0 then
+                    EmptyState.Visible = true
                 end
             end
             return element
@@ -776,7 +794,188 @@ function Aurora:CreateWindow(config)
             }, DropdownFrame)
         end
 
-        -- ── Input ─────────────────────────────
+        -- ── MultiSelect ───────────────────────
+
+        function Tab:CreateMultiSelect(cfg)
+            cfg = cfg or {}
+            local options   = cfg.Options  or {}
+            local selected  = {}           -- set: option → true/false
+            local expanded  = false
+            local OnChanged = Signal.new()
+            local labelText = cfg.Text or "Select"
+
+            -- Seed defaults
+            for _, opt in ipairs(cfg.Default or {}) do
+                selected[opt] = true
+            end
+
+            local function SelectedList()
+                local t = {}
+                for _, opt in ipairs(options) do
+                    if selected[opt] then t[#t + 1] = opt end
+                end
+                return t
+            end
+
+            local function HeaderText()
+                local list = SelectedList()
+                if #list == 0 then return labelText .. ": None"
+                elseif #list == 1 then return labelText .. ": " .. list[1]
+                else return labelText .. ": " .. #list .. " selected" end
+            end
+
+            local MultiFrame = Create("Frame", {
+                Parent           = TabContent,
+                Size             = UDim2.new(1, 0, 0, 36),
+                BackgroundColor3 = Aurora.Config.Theme.Background,
+                BorderSizePixel  = 0,
+                ClipsDescendants = true,
+            })
+            AddCorner(MultiFrame, UDim.new(0, 4))
+
+            local Label = Create("TextLabel", {
+                Parent             = MultiFrame,
+                Position           = UDim2.new(0, 12, 0, 0),
+                Size               = UDim2.new(1, -38, 0, 36),
+                BackgroundTransparency = 1,
+                Text               = HeaderText(),
+                TextColor3         = Aurora.Config.Theme.Text,
+                Font               = Aurora.Config.FontMedium,
+                TextSize           = 14,
+                TextXAlignment     = Enum.TextXAlignment.Left,
+                TextTruncate       = Enum.TextTruncate.AtEnd,
+            })
+
+            local Arrow = Create("TextLabel", {
+                Parent             = MultiFrame,
+                Position           = UDim2.new(1, -28, 0, 0),
+                Size               = UDim2.new(0, 20, 0, 36),
+                BackgroundTransparency = 1,
+                Text               = "▼",
+                TextColor3         = Aurora.Config.Theme.TextMuted,
+                Font               = Aurora.Config.FontBold,
+                TextSize           = 11,
+            })
+
+            local OptionsFrame = Create("Frame", {
+                Parent           = MultiFrame,
+                Position         = UDim2.new(0, 0, 0, 36),
+                Size             = UDim2.new(1, 0, 0, #options * 30),
+                BackgroundColor3 = Aurora.Config.Theme.Surface,
+                BorderSizePixel  = 0,
+                ClipsDescendants = true,
+            })
+            Create("UIListLayout", {Parent = OptionsFrame, SortOrder = Enum.SortOrder.LayoutOrder})
+
+            for i, option in ipairs(options) do
+                local row = Create("Frame", {
+                    Parent           = OptionsFrame,
+                    Size             = UDim2.new(1, 0, 0, 30),
+                    BackgroundColor3 = Aurora.Config.Theme.Surface,
+                    BorderSizePixel  = 0,
+                    LayoutOrder      = i,
+                })
+
+                -- Checkbox
+                local Box = Create("Frame", {
+                    Parent           = row,
+                    Position         = UDim2.new(0, 8, 0.5, -8),
+                    Size             = UDim2.new(0, 16, 0, 16),
+                    BackgroundColor3 = selected[option] and Aurora.Config.Theme.Primary or Aurora.Config.Theme.Border,
+                    BorderSizePixel  = 0,
+                })
+                AddCorner(Box, UDim.new(0, 3))
+
+                local Tick = Create("TextLabel", {
+                    Parent             = Box,
+                    Size               = UDim2.new(1, 0, 1, 0),
+                    BackgroundTransparency = 1,
+                    Text               = selected[option] and "✓" or "",
+                    TextColor3         = Aurora.Config.Theme.Text,
+                    Font               = Aurora.Config.FontBold,
+                    TextSize           = 11,
+                })
+
+                Create("TextLabel", {
+                    Parent             = row,
+                    Position           = UDim2.new(0, 32, 0, 0),
+                    Size               = UDim2.new(1, -40, 1, 0),
+                    BackgroundTransparency = 1,
+                    Text               = option,
+                    TextColor3         = selected[option] and Aurora.Config.Theme.Text or Aurora.Config.Theme.TextMuted,
+                    Font               = Aurora.Config.FontMedium,
+                    TextSize           = 13,
+                    TextXAlignment     = Enum.TextXAlignment.Left,
+                    Name               = "OptionLabel",
+                })
+
+                local RowBtn = Create("TextButton", {
+                    Parent             = row,
+                    Size               = UDim2.new(1, 0, 1, 0),
+                    BackgroundTransparency = 1,
+                    Text               = "",
+                })
+
+                RowBtn.MouseEnter:Connect(function()
+                    Tween(row, {BackgroundColor3 = Aurora.Config.Theme.Background}, 0.15)
+                end)
+                RowBtn.MouseLeave:Connect(function()
+                    Tween(row, {BackgroundColor3 = Aurora.Config.Theme.Surface}, 0.15)
+                end)
+                RowBtn.MouseButton1Click:Connect(function()
+                    selected[option] = not selected[option]
+                    local on = selected[option]
+                    Tween(Box, {BackgroundColor3 = on and Aurora.Config.Theme.Primary or Aurora.Config.Theme.Border}, 0.15)
+                    Tick.Text = on and "✓" or ""
+                    local lbl = row:FindFirstChild("OptionLabel")
+                    if lbl then
+                        Tween(lbl, {TextColor3 = on and Aurora.Config.Theme.Text or Aurora.Config.Theme.TextMuted}, 0.15)
+                    end
+                    Label.Text = HeaderText()
+                    local vals = SelectedList()
+                    if cfg.Callback then cfg.Callback(vals) end
+                    OnChanged:Fire(vals)
+                end)
+            end
+
+            -- Toggle
+            Create("TextButton", {
+                Parent             = MultiFrame,
+                Size               = UDim2.new(1, 0, 0, 36),
+                BackgroundTransparency = 1,
+                Text               = "",
+            }).MouseButton1Click:Connect(function()
+                expanded = not expanded
+                Tween(MultiFrame, {Size = UDim2.new(1, 0, 0, expanded and 36 + #options * 30 or 36)}, 0.2)
+                Tween(Arrow, {Rotation = expanded and 180 or 0}, 0.2)
+            end)
+
+            return RegisterElement({
+                Frame     = MultiFrame,
+                OnChanged = OnChanged,
+                GetValue  = function() return SelectedList() end,
+                SetValue  = function(vals)
+                    -- vals is an array of selected option strings
+                    selected = {}
+                    for _, v in ipairs(vals) do selected[v] = true end
+                    Label.Text = HeaderText()
+                    -- Sync checkboxes visually
+                    for _, row in ipairs(OptionsFrame:GetChildren()) do
+                        if row:IsA("Frame") then
+                            local box  = row:FindFirstChildWhichIsA("Frame")
+                            local tick = box and box:FindFirstChildWhichIsA("TextLabel")
+                            local lbl  = row:FindFirstChild("OptionLabel")
+                            local opt  = lbl and lbl.Text
+                            local on   = opt and selected[opt] or false
+                            if box  then box.BackgroundColor3 = on and Aurora.Config.Theme.Primary or Aurora.Config.Theme.Border end
+                            if tick then tick.Text = on and "✓" or "" end
+                            if lbl  then lbl.TextColor3 = on and Aurora.Config.Theme.Text or Aurora.Config.Theme.TextMuted end
+                        end
+                    end
+                end,
+                IsSelected = function(opt) return selected[opt] == true end,
+            }, MultiFrame)
+        end
 
         function Tab:CreateInput(cfg)
             cfg = cfg or {}
@@ -832,7 +1031,108 @@ function Aurora:CreateWindow(config)
             }, frame)
         end
 
-        -- ── Keybind ───────────────────────────  NEW
+        -- ── NumberInput ───────────────────────
+
+        function Tab:CreateNumberInput(cfg)
+            cfg = cfg or {}
+            local min       = cfg.Min       or -math.huge
+            local max       = cfg.Max       or math.huge
+            local step      = cfg.Step      or 1
+            local current   = math.clamp(cfg.Default or 0, min, max)
+            local OnChanged = Signal.new()
+            local frame     = BaseFrame(54)
+
+            Create("TextLabel", {
+                Parent             = frame,
+                Position           = UDim2.new(0, 12, 0, 6),
+                Size               = UDim2.new(1, -24, 0, 16),
+                BackgroundTransparency = 1,
+                Text               = cfg.Text or "Number",
+                TextColor3         = Aurora.Config.Theme.TextMuted,
+                Font               = Aurora.Config.FontMedium,
+                TextSize           = 12,
+                TextXAlignment     = Enum.TextXAlignment.Left,
+            })
+
+            -- [ − ] [ value ] [ + ]  row
+            local Row = Create("Frame", {
+                Parent           = frame,
+                Position         = UDim2.new(0, 10, 0, 26),
+                Size             = UDim2.new(1, -20, 0, 22),
+                BackgroundTransparency = 1,
+                BorderSizePixel  = 0,
+            })
+
+            local function MakeStepBtn(xAlign, symbol)
+                local btn = Create("TextButton", {
+                    Parent           = Row,
+                    AnchorPoint      = Vector2.new(xAlign, 0),
+                    Position         = UDim2.new(xAlign, 0, 0, 0),
+                    Size             = UDim2.new(0, 26, 1, 0),
+                    BackgroundColor3 = Aurora.Config.Theme.Surface,
+                    Text             = symbol,
+                    TextColor3       = Aurora.Config.Theme.Primary,
+                    Font             = Aurora.Config.FontBold,
+                    TextSize         = 16,
+                    AutoButtonColor  = false,
+                    BorderSizePixel  = 0,
+                })
+                AddCorner(btn, UDim.new(0, 4))
+                btn.MouseEnter:Connect(function()
+                    Tween(btn, {BackgroundColor3 = Aurora.Config.Theme.Primary, TextColor3 = Aurora.Config.Theme.Text}, 0.15)
+                end)
+                btn.MouseLeave:Connect(function()
+                    Tween(btn, {BackgroundColor3 = Aurora.Config.Theme.Surface, TextColor3 = Aurora.Config.Theme.Primary}, 0.15)
+                end)
+                return btn
+            end
+
+            local MinusBtn = MakeStepBtn(0, "−")
+            local PlusBtn  = MakeStepBtn(1, "+")
+
+            local NumBox = Create("TextBox", {
+                Parent             = Row,
+                Position           = UDim2.new(0, 30, 0, 0),
+                Size               = UDim2.new(1, -60, 1, 0),
+                BackgroundColor3   = Aurora.Config.Theme.Surface,
+                BorderSizePixel    = 0,
+                Text               = tostring(current),
+                TextColor3         = Aurora.Config.Theme.Text,
+                Font               = Aurora.Config.FontBold,
+                TextSize           = 13,
+                ClearTextOnFocus   = false,
+                TextXAlignment     = Enum.TextXAlignment.Center,
+            })
+            AddCorner(NumBox, UDim.new(0, 4))
+
+            local function Commit(val)
+                val = math.clamp(math.floor(val / step + 0.5) * step, min, max)
+                if val == current then
+                    NumBox.Text = tostring(current) -- reset display if clamped
+                    return
+                end
+                current     = val
+                NumBox.Text = tostring(val)
+                if cfg.Callback then cfg.Callback(val) end
+                OnChanged:Fire(val)
+            end
+
+            MinusBtn.MouseButton1Click:Connect(function() Commit(current - step) end)
+            PlusBtn.MouseButton1Click:Connect(function()  Commit(current + step) end)
+
+            NumBox.FocusLost:Connect(function()
+                local n = tonumber(NumBox.Text)
+                if n then Commit(n)
+                else NumBox.Text = tostring(current) end  -- revert invalid input
+            end)
+
+            return RegisterElement({
+                Frame     = frame,
+                OnChanged = OnChanged,
+                GetValue  = function() return current end,
+                SetValue  = function(val) Commit(val) end,
+            }, frame)
+        end
 
         function Tab:CreateKeybind(cfg)
             cfg = cfg or {}
@@ -1270,8 +1570,10 @@ function Aurora:CreateWindow(config)
         return Tab
     end
 
-    local _dragStop = MakeDraggable(MainFrame, TitleBar)
-    table.insert(windowConnections, {Disconnect = _dragStop})
+    local dragConns = MakeDraggable(MainFrame, TitleBar)
+    for _, c in ipairs(dragConns) do
+        table.insert(windowConnections, c)
+    end
 
     -- Intro animation
     MainFrame.Size     = UDim2.new(0, 0, 0, 0)
