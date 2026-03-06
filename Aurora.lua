@@ -1,6 +1,6 @@
 --// Aurora UI Library
 --// A minimalistic, beautiful UI library for Roblox
---// Version: 5.0.0
+--// Version: 6.0.0
 
 local Aurora = {}
 local TweenService     = game:GetService("TweenService")
@@ -271,14 +271,19 @@ function Aurora:CreateWindow(config)
         ScreenGui:Destroy()
     end)
 
-    --// Tab sidebar
+    --// Tab sidebar — auto-sizing width
+    local SIDEBAR_MIN = 110
+    local SIDEBAR_MAX = 200
+    local SIDEBAR_GAP = 8   -- gap between sidebar and content
+
     local TabContainer = Create("Frame", {
         Name             = "TabContainer",
         Parent           = MainFrame,
         Position         = UDim2.new(0, 8, 0, 48),
-        Size             = UDim2.new(0, 130, 1, -56),
+        Size             = UDim2.new(0, SIDEBAR_MIN, 1, -56),
         BackgroundColor3 = Aurora.Config.Theme.Surface,
         BorderSizePixel  = 0,
+        AutomaticSize    = Enum.AutomaticSize.X,
     })
     AddCorner(TabContainer)
     Create("UIListLayout", {Parent = TabContainer, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder})
@@ -287,18 +292,30 @@ function Aurora:CreateWindow(config)
         PaddingTop    = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
         PaddingLeft   = UDim.new(0, 6), PaddingRight  = UDim.new(0, 6),
     })
+    Create("UISizeConstraint", {
+        Parent  = TabContainer,
+        MinSize = Vector2.new(SIDEBAR_MIN, 0),
+        MaxSize = Vector2.new(SIDEBAR_MAX, math.huge),
+    })
 
     --// Content area
     local ContentContainer = Create("Frame", {
         Name             = "ContentContainer",
         Parent           = MainFrame,
-        Position         = UDim2.new(0, 146, 0, 48),
-        Size             = UDim2.new(1, -154, 1, -56),
+        Position         = UDim2.new(0, 8 + SIDEBAR_MIN + SIDEBAR_GAP, 0, 48),
+        Size             = UDim2.new(1, -(8 + SIDEBAR_MIN + SIDEBAR_GAP + 8), 1, -56),
         BackgroundColor3 = Aurora.Config.Theme.Surface,
         BorderSizePixel  = 0,
         ClipsDescendants = true,
     })
     AddCorner(ContentContainer)
+
+    -- Reflow ContentContainer whenever the sidebar width changes
+    TabContainer:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+        local w = math.clamp(TabContainer.AbsoluteSize.X, SIDEBAR_MIN, SIDEBAR_MAX)
+        ContentContainer.Position = UDim2.new(0, 8 + w + SIDEBAR_GAP, 0, 48)
+        ContentContainer.Size     = UDim2.new(1, -(8 + w + SIDEBAR_GAP + 8), 1, -56)
+    end)
 
     -- Subtle bottom fade so sparse tabs don't end abruptly
     local FadeGradient = Create("Frame", {
@@ -359,6 +376,7 @@ function Aurora:CreateWindow(config)
             Text             = "",
             AutoButtonColor  = false,
             LayoutOrder      = #Window.Tabs + 1,
+            AutomaticSize    = Enum.AutomaticSize.X,
         })
         AddCorner(TabButton, UDim.new(0, 4))
 
@@ -379,14 +397,19 @@ function Aurora:CreateWindow(config)
             Name               = "Label",
             Parent             = TabButton,
             Position           = UDim2.new(0, iconOffset, 0, 0),
-            Size               = UDim2.new(1, -iconOffset - 4, 1, 0),
+            Size               = UDim2.new(0, 0, 1, 0),   -- width driven by AutomaticSize
+            AutomaticSize      = Enum.AutomaticSize.X,
             BackgroundTransparency = 1,
             Text               = tabName,
             TextColor3         = Aurora.Config.Theme.TextMuted,
             Font               = Aurora.Config.FontMedium,
             TextSize           = 13,
             TextXAlignment     = Enum.TextXAlignment.Left,
-            TextTruncate       = Enum.TextTruncate.AtEnd,
+        })
+        -- Right padding so text doesn't hug the edge
+        Create("UIPadding", {
+            Parent       = TabLabel,
+            PaddingRight = UDim.new(0, 10),
         })
 
         local TabContent = Create("ScrollingFrame", {
@@ -1785,7 +1808,224 @@ function Aurora:CreateWindow(config)
             return RegisterElement({Frame = frame}, frame)
         end
 
-        -- Auto-select first tab
+        -- ── Table ─────────────────────────────
+
+        function Tab:CreateTable(cfg)
+            cfg = cfg or {}
+            local columns  = cfg.Columns  or { "Column 1", "Column 2" }
+            local rows     = cfg.Rows     or {}
+            local rowH     = 28
+            local headerH  = 28
+            local maxRows  = cfg.MaxVisible or 6
+            local OnRowClicked = Signal.new()
+
+            local numCols  = #columns
+            local colW     = 1 / numCols
+
+            -- Outer frame: header + scrollable body
+            local TableFrame = Create("Frame", {
+                Parent           = TabContent,
+                Size             = UDim2.new(1, 0, 0, headerH + math.min(#rows, maxRows) * rowH),
+                BackgroundColor3 = Aurora.Config.Theme.Background,
+                BorderSizePixel  = 0,
+                ClipsDescendants = false,
+            })
+            AddCorner(TableFrame, UDim.new(0, 4))
+
+            -- ── Header row ───────────────────
+            local Header = Create("Frame", {
+                Parent           = TableFrame,
+                Size             = UDim2.new(1, 0, 0, headerH),
+                BackgroundColor3 = Aurora.Config.Theme.Primary,
+                BorderSizePixel  = 0,
+                ClipsDescendants = true,
+            })
+            AddCorner(Header, UDim.new(0, 4))
+            -- Patch bottom corners of header so it sits flush on the body
+            Create("Frame", {
+                Parent           = Header,
+                Position         = UDim2.new(0, 0, 1, -6),
+                Size             = UDim2.new(1, 0, 0, 6),
+                BackgroundColor3 = Aurora.Config.Theme.Primary,
+                BorderSizePixel  = 0,
+            })
+
+            for i, col in ipairs(columns) do
+                Create("TextLabel", {
+                    Parent             = Header,
+                    Position           = UDim2.new((i-1) * colW, 8, 0, 0),
+                    Size               = UDim2.new(colW, -8, 1, 0),
+                    BackgroundTransparency = 1,
+                    Text               = col,
+                    TextColor3         = Aurora.Config.Theme.Text,
+                    Font               = Aurora.Config.FontBold,
+                    TextSize           = 12,
+                    TextXAlignment     = Enum.TextXAlignment.Left,
+                    TextTruncate       = Enum.TextTruncate.AtEnd,
+                })
+                -- Column divider (skip after last)
+                if i < numCols then
+                    Create("Frame", {
+                        Parent           = Header,
+                        Position         = UDim2.new(i * colW, 0, 0.1, 0),
+                        Size             = UDim2.new(0, 1, 0.8, 0),
+                        BackgroundColor3 = Color3.new(1,1,1),
+                        BackgroundTransparency = 0.7,
+                        BorderSizePixel  = 0,
+                    })
+                end
+            end
+
+            -- ── Scrollable body ──────────────
+            local Body = Create("ScrollingFrame", {
+                Parent               = TableFrame,
+                Position             = UDim2.new(0, 0, 0, headerH),
+                Size                 = UDim2.new(1, 0, 1, -headerH),
+                BackgroundColor3     = Aurora.Config.Theme.Background,
+                BorderSizePixel      = 0,
+                ScrollBarThickness   = 2,
+                ScrollBarImageColor3 = Aurora.Config.Theme.Border,
+                AutomaticCanvasSize  = Enum.AutomaticSize.Y,
+                CanvasSize           = UDim2.new(0, 0, 0, 0),
+                ClipsDescendants     = true,
+            })
+            -- Round only the bottom corners
+            AddCorner(Body, UDim.new(0, 4))
+            Create("UIListLayout", {Parent = Body, SortOrder = Enum.SortOrder.LayoutOrder})
+
+            -- Internal: render a single row
+            local rowObjects = {}
+            local function RenderRow(rowData, index)
+                local isEven   = index % 2 == 0
+                local rowFrame = Create("Frame", {
+                    Parent           = Body,
+                    Size             = UDim2.new(1, 0, 0, rowH),
+                    BackgroundColor3 = isEven and Aurora.Config.Theme.Surface or Aurora.Config.Theme.Background,
+                    BorderSizePixel  = 0,
+                    LayoutOrder      = index,
+                })
+
+                for c, cell in ipairs(rowData) do
+                    Create("TextLabel", {
+                        Parent             = rowFrame,
+                        Position           = UDim2.new((c-1) * colW, 8, 0, 0),
+                        Size               = UDim2.new(colW, -8, 1, 0),
+                        BackgroundTransparency = 1,
+                        Text               = tostring(cell),
+                        TextColor3         = Aurora.Config.Theme.Text,
+                        Font               = Aurora.Config.Font,
+                        TextSize           = 12,
+                        TextXAlignment     = Enum.TextXAlignment.Left,
+                        TextTruncate       = Enum.TextTruncate.AtEnd,
+                    })
+                end
+
+                -- Hover + click
+                local rowBtn = Create("TextButton", {
+                    Parent             = rowFrame,
+                    Size               = UDim2.new(1, 0, 1, 0),
+                    BackgroundTransparency = 1,
+                    Text               = "",
+                })
+                rowBtn.MouseEnter:Connect(function()
+                    Tween(rowFrame, {BackgroundColor3 = Color3.fromRGB(40, 40, 55)}, 0.12)
+                end)
+                rowBtn.MouseLeave:Connect(function()
+                    Tween(rowFrame, {BackgroundColor3 = isEven and Aurora.Config.Theme.Surface or Aurora.Config.Theme.Background}, 0.12)
+                end)
+                rowBtn.MouseButton1Click:Connect(function()
+                    OnRowClicked:Fire(index, rowData)
+                end)
+
+                return rowFrame
+            end
+
+            -- Render initial rows
+            for i, rowData in ipairs(rows) do
+                rowObjects[i] = RenderRow(rowData, i)
+            end
+
+            -- Resize outer frame to fit visible rows
+            local function Resize()
+                local visible = math.min(#rows, maxRows)
+                TableFrame.Size = UDim2.new(1, 0, 0, headerH + visible * rowH)
+            end
+            Resize()
+
+            -- Element API
+            local element = {
+                Frame        = TableFrame,
+                OnRowClicked = OnRowClicked,
+
+                -- Replace all rows at once
+                SetRows = function(newRows)
+                    rows = newRows
+                    -- Clear existing
+                    for _, obj in ipairs(rowObjects) do obj:Destroy() end
+                    rowObjects = {}
+                    for i, rowData in ipairs(rows) do
+                        rowObjects[i] = RenderRow(rowData, i)
+                    end
+                    Resize()
+                end,
+
+                -- Append a single row
+                AddRow = function(rowData)
+                    table.insert(rows, rowData)
+                    local i = #rows
+                    rowObjects[i] = RenderRow(rowData, i)
+                    Resize()
+                end,
+
+                -- Remove a row by index (1-based)
+                RemoveRow = function(index)
+                    if not rows[index] then return end
+                    table.remove(rows, index)
+                    -- Re-render all (alternating colours need reindex)
+                    for _, obj in ipairs(rowObjects) do obj:Destroy() end
+                    rowObjects = {}
+                    for i, rowData in ipairs(rows) do
+                        rowObjects[i] = RenderRow(rowData, i)
+                    end
+                    Resize()
+                end,
+
+                -- Update a single cell without full re-render
+                SetCell = function(rowIndex, colIndex, value)
+                    if not rows[rowIndex] then return end
+                    rows[rowIndex][colIndex] = value
+                    -- Find and update label directly
+                    local rowFrame = rowObjects[rowIndex]
+                    if rowFrame then
+                        local labels = {}
+                        for _, c in ipairs(rowFrame:GetChildren()) do
+                            if c:IsA("TextLabel") then
+                                table.insert(labels, c)
+                            end
+                        end
+                        -- Labels are ordered by Position.X.Scale
+                        table.sort(labels, function(a, b)
+                            return a.Position.X.Scale < b.Position.X.Scale
+                        end)
+                        if labels[colIndex] then
+                            labels[colIndex].Text = tostring(value)
+                        end
+                    end
+                end,
+
+                -- Clear all rows
+                Clear = function()
+                    rows = {}
+                    for _, obj in ipairs(rowObjects) do obj:Destroy() end
+                    rowObjects = {}
+                    Resize()
+                end,
+
+                GetRows = function() return rows end,
+            }
+
+            return RegisterElement(element, TableFrame)
+        end
         if #Window.Tabs == 0 then
             TabButton.BackgroundColor3 = Aurora.Config.Theme.Primary
             TabLabel.TextColor3        = Aurora.Config.Theme.Text
