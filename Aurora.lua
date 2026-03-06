@@ -1,6 +1,6 @@
 --// Aurora UI Library
 --// A minimalistic, beautiful UI library for Roblox
---// Version: 3.0.0
+--// Version: 3.1.0
 
 local Aurora = {}
 local TweenService     = game:GetService("TweenService")
@@ -918,7 +918,7 @@ function Aurora:CreateWindow(config)
             }, frame)
         end
 
-        -- ── ColorPicker ───────────────────────  NEW
+        -- ── ColorPicker ───────────────────────
 
         function Tab:CreateColorPicker(cfg)
             cfg = cfg or {}
@@ -926,14 +926,10 @@ function Aurora:CreateWindow(config)
             local expanded  = false
             local OnChanged = Signal.new()
 
-            -- Convert Color3 → H,S,V
-            local function toHSV(c)
-                return Color3.toHSV(c)
-            end
+            local h, s, v   = Color3.toHSV(color)
 
-            local h, s, v = toHSV(color)
-
-            local PICKER_H = 140  -- expanded panel height
+            -- Expanded height: 36 header + 6 gap + 68 pads + 6 gap + 22 hex + 10 padding
+            local EXPANDED_H = 148
 
             local PickerFrame = Create("Frame", {
                 Parent           = TabContent,
@@ -944,7 +940,7 @@ function Aurora:CreateWindow(config)
             })
             AddCorner(PickerFrame, UDim.new(0, 4))
 
-            -- Header row
+            -- Header
             Create("TextLabel", {
                 Parent             = PickerFrame,
                 Position           = UDim2.new(0, 12, 0, 0),
@@ -966,36 +962,84 @@ function Aurora:CreateWindow(config)
             })
             AddCorner(Preview, UDim.new(0, 4))
 
-            local ToggleBtn = Create("TextButton", {
+            -- Toggle expand
+            Create("TextButton", {
                 Parent             = PickerFrame,
                 Size               = UDim2.new(1, 0, 0, 36),
                 BackgroundTransparency = 1,
                 Text               = "",
-            })
+                ZIndex             = 10,
+            }).MouseButton1Click:Connect(function()
+                expanded = not expanded
+                Tween(PickerFrame, {Size = UDim2.new(1, 0, 0, expanded and EXPANDED_H or 36)}, 0.25)
+            end)
 
-            -- ── Expanded panel ────────────────
-
+            -- Panel container
             local Panel = Create("Frame", {
-                Parent           = PickerFrame,
-                Position         = UDim2.new(0, 8, 0, 42),
-                Size             = UDim2.new(1, -16, 0, PICKER_H - 48),
+                Parent             = PickerFrame,
+                Position           = UDim2.new(0, 8, 0, 44),
+                Size               = UDim2.new(1, -16, 0, 96),
                 BackgroundTransparency = 1,
-                BorderSizePixel  = 0,
+                BorderSizePixel    = 0,
             })
 
-            -- Saturation / Value 2D pad
-            local SVPad = Create("ImageButton", {
+            -- ── SV Pad ───────────────────────
+            -- Background: pure hue color
+            local SVPad = Create("Frame", {
                 Parent           = Panel,
                 Position         = UDim2.new(0, 0, 0, 0),
-                Size             = UDim2.new(1, -28, 0, 68),
-                Image            = "rbxassetid://698052001", -- SV gradient
-                ImageColor3      = Color3.fromHSV(h, 1, 1),
-                BackgroundColor3 = Color3.new(1, 1, 1),
+                Size             = UDim2.new(1, -26, 0, 68),
+                BackgroundColor3 = Color3.fromHSV(h, 1, 1),
                 BorderSizePixel  = 0,
-                AutoButtonColor  = false,
+                ClipsDescendants = true,
+                ZIndex           = 2,
             })
             AddCorner(SVPad, UDim.new(0, 4))
 
+            -- White-to-transparent overlay (left = white, right = hue) — controls Saturation
+            local WLayer = Create("Frame", {
+                Parent             = SVPad,
+                Size               = UDim2.new(1, 0, 1, 0),
+                BackgroundColor3   = Color3.new(1, 1, 1),
+                BorderSizePixel    = 0,
+                ZIndex             = 3,
+            })
+            Create("UIGradient", {
+                Parent       = WLayer,
+                Transparency = NumberSequence.new({
+                    NumberSequenceKeypoint.new(0, 0),   -- left: opaque white
+                    NumberSequenceKeypoint.new(1, 1),   -- right: transparent (shows hue)
+                }),
+                Rotation = 0,
+            })
+
+            -- Transparent-to-black overlay (top = clear, bottom = black) — controls Value
+            local BLayer = Create("Frame", {
+                Parent             = SVPad,
+                Size               = UDim2.new(1, 0, 1, 0),
+                BackgroundColor3   = Color3.new(0, 0, 0),
+                BorderSizePixel    = 0,
+                ZIndex             = 4,
+            })
+            Create("UIGradient", {
+                Parent       = BLayer,
+                Transparency = NumberSequence.new({
+                    NumberSequenceKeypoint.new(0, 1),   -- top: transparent
+                    NumberSequenceKeypoint.new(1, 0),   -- bottom: opaque black
+                }),
+                Rotation = 90,
+            })
+
+            -- Invisible drag surface (above gradients)
+            local SVDrag = Create("TextButton", {
+                Parent             = SVPad,
+                Size               = UDim2.new(1, 0, 1, 0),
+                BackgroundTransparency = 1,
+                Text               = "",
+                ZIndex             = 6,
+            })
+
+            -- Cursor dot
             local SVCursor = Create("Frame", {
                 Parent           = SVPad,
                 Size             = UDim2.new(0, 10, 0, 10),
@@ -1003,20 +1047,44 @@ function Aurora:CreateWindow(config)
                 Position         = UDim2.new(s, 0, 1 - v, 0),
                 BackgroundColor3 = Color3.new(1, 1, 1),
                 BorderSizePixel  = 0,
+                ZIndex           = 7,
             })
             AddCorner(SVCursor, UDim.new(1, 0))
 
-            -- Hue bar (vertical, right side)
-            local HueBar = Create("ImageButton", {
+            -- ── Hue Bar ──────────────────────
+            local HueBar = Create("Frame", {
                 Parent           = Panel,
-                Position         = UDim2.new(1, -22, 0, 0),
-                Size             = UDim2.new(0, 16, 0, 68),
-                Image            = "rbxassetid://698053677", -- hue gradient
+                Position         = UDim2.new(1, -20, 0, 0),
+                Size             = UDim2.new(0, 14, 0, 68),
                 BackgroundColor3 = Color3.new(1, 1, 1),
                 BorderSizePixel  = 0,
-                AutoButtonColor  = false,
+                ClipsDescendants = true,
+                ZIndex           = 2,
             })
             AddCorner(HueBar, UDim.new(0, 4))
+
+            -- Full-spectrum UIGradient (top→bottom = 0°→360°)
+            Create("UIGradient", {
+                Parent   = HueBar,
+                Color    = ColorSequence.new({
+                    ColorSequenceKeypoint.new(0/6, Color3.fromHSV(0/6, 1, 1)),
+                    ColorSequenceKeypoint.new(1/6, Color3.fromHSV(1/6, 1, 1)),
+                    ColorSequenceKeypoint.new(2/6, Color3.fromHSV(2/6, 1, 1)),
+                    ColorSequenceKeypoint.new(3/6, Color3.fromHSV(3/6, 1, 1)),
+                    ColorSequenceKeypoint.new(4/6, Color3.fromHSV(4/6, 1, 1)),
+                    ColorSequenceKeypoint.new(5/6, Color3.fromHSV(5/6, 1, 1)),
+                    ColorSequenceKeypoint.new(1,   Color3.fromHSV(0,   1, 1)),
+                }),
+                Rotation = 90,
+            })
+
+            local HueDrag = Create("TextButton", {
+                Parent             = HueBar,
+                Size               = UDim2.new(1, 0, 1, 0),
+                BackgroundTransparency = 1,
+                Text               = "",
+                ZIndex             = 3,
+            })
 
             local HueCursor = Create("Frame", {
                 Parent           = HueBar,
@@ -1025,32 +1093,35 @@ function Aurora:CreateWindow(config)
                 Position         = UDim2.new(0, 0, h, 0),
                 BackgroundColor3 = Color3.new(1, 1, 1),
                 BorderSizePixel  = 0,
+                ZIndex           = 4,
             })
             AddCorner(HueCursor, UDim.new(1, 0))
 
-            -- Hex input
+            -- ── Hex Input ────────────────────
             local HexInput = Create("TextBox", {
-                Parent           = Panel,
-                Position         = UDim2.new(0, 0, 0, 74),
-                Size             = UDim2.new(1, 0, 0, 22),
-                BackgroundColor3 = Aurora.Config.Theme.Surface,
-                BorderSizePixel  = 0,
-                Text             = string.format("#%02X%02X%02X",
+                Parent             = Panel,
+                Position           = UDim2.new(0, 0, 0, 74),
+                Size               = UDim2.new(1, 0, 0, 22),
+                BackgroundColor3   = Aurora.Config.Theme.Surface,
+                BorderSizePixel    = 0,
+                Text               = string.format("#%02X%02X%02X",
                     math.round(color.R * 255),
                     math.round(color.G * 255),
                     math.round(color.B * 255)),
-                TextColor3       = Aurora.Config.Theme.Text,
-                Font             = Aurora.Config.Font,
-                TextSize         = 12,
-                ClearTextOnFocus = false,
+                TextColor3         = Aurora.Config.Theme.Text,
+                Font               = Aurora.Config.Font,
+                TextSize           = 12,
+                ClearTextOnFocus   = false,
+                ZIndex             = 2,
             })
             AddCorner(HexInput, UDim.new(0, 4))
             Create("UIPadding", {Parent = HexInput, PaddingLeft = UDim.new(0, 8)})
 
+            -- ── Commit ───────────────────────
             local function Commit()
                 color = Color3.fromHSV(h, s, v)
                 Preview.BackgroundColor3 = color
-                SVPad.ImageColor3        = Color3.fromHSV(h, 1, 1)
+                SVPad.BackgroundColor3   = Color3.fromHSV(h, 1, 1)
                 SVCursor.Position        = UDim2.new(s, 0, 1 - v, 0)
                 HueCursor.Position       = UDim2.new(0, 0, h, 0)
                 HexInput.Text = string.format("#%02X%02X%02X",
@@ -1061,61 +1132,65 @@ function Aurora:CreateWindow(config)
                 OnChanged:Fire(color)
             end
 
-            -- SV pad drag
-            local svDrag = false
-            SVPad.InputBegan:Connect(function(inp)
-                if inp.UserInputType == Enum.UserInputType.MouseButton1 then svDrag = true end
-            end)
-            local c1 = UserInputService.InputChanged:Connect(function(inp)
-                if svDrag and inp.UserInputType == Enum.UserInputType.MouseMovement then
+            -- SV drag
+            local svDragging = false
+            SVDrag.InputBegan:Connect(function(inp)
+                if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                    svDragging = true
+                    -- Also sample on initial click
                     s = math.clamp((inp.Position.X - SVPad.AbsolutePosition.X) / SVPad.AbsoluteSize.X, 0, 1)
                     v = 1 - math.clamp((inp.Position.Y - SVPad.AbsolutePosition.Y) / SVPad.AbsoluteSize.Y, 0, 1)
                     Commit()
                 end
             end)
-            local c2 = UserInputService.InputEnded:Connect(function(inp)
-                if inp.UserInputType == Enum.UserInputType.MouseButton1 then svDrag = false end
+            local svMove = UserInputService.InputChanged:Connect(function(inp)
+                if svDragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
+                    s = math.clamp((inp.Position.X - SVPad.AbsolutePosition.X) / SVPad.AbsoluteSize.X, 0, 1)
+                    v = 1 - math.clamp((inp.Position.Y - SVPad.AbsolutePosition.Y) / SVPad.AbsoluteSize.Y, 0, 1)
+                    Commit()
+                end
             end)
-            table.insert(windowConnections, c1)
-            table.insert(windowConnections, c2)
+            local svEnd = UserInputService.InputEnded:Connect(function(inp)
+                if inp.UserInputType == Enum.UserInputType.MouseButton1 then svDragging = false end
+            end)
+            table.insert(windowConnections, svMove)
+            table.insert(windowConnections, svEnd)
 
-            -- Hue bar drag
-            local hueDrag = false
-            HueBar.InputBegan:Connect(function(inp)
-                if inp.UserInputType == Enum.UserInputType.MouseButton1 then hueDrag = true end
-            end)
-            local c3 = UserInputService.InputChanged:Connect(function(inp)
-                if hueDrag and inp.UserInputType == Enum.UserInputType.MouseMovement then
+            -- Hue drag
+            local hueDragging = false
+            HueDrag.InputBegan:Connect(function(inp)
+                if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                    hueDragging = true
                     h = math.clamp((inp.Position.Y - HueBar.AbsolutePosition.Y) / HueBar.AbsoluteSize.Y, 0, 1)
                     Commit()
                 end
             end)
-            local c4 = UserInputService.InputEnded:Connect(function(inp)
-                if inp.UserInputType == Enum.UserInputType.MouseButton1 then hueDrag = false end
+            local hueMove = UserInputService.InputChanged:Connect(function(inp)
+                if hueDragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
+                    h = math.clamp((inp.Position.Y - HueBar.AbsolutePosition.Y) / HueBar.AbsoluteSize.Y, 0, 1)
+                    Commit()
+                end
             end)
-            table.insert(windowConnections, c3)
-            table.insert(windowConnections, c4)
+            local hueEnd = UserInputService.InputEnded:Connect(function(inp)
+                if inp.UserInputType == Enum.UserInputType.MouseButton1 then hueDragging = false end
+            end)
+            table.insert(windowConnections, hueMove)
+            table.insert(windowConnections, hueEnd)
 
-            -- Hex input
+            -- Hex input: parse on Enter
             HexInput.FocusLost:Connect(function(enter)
                 if not enter then return end
                 local hex = HexInput.Text:gsub("#", "")
                 if #hex == 6 then
-                    local r = tonumber(hex:sub(1,2), 16)
-                    local g = tonumber(hex:sub(3,4), 16)
-                    local b = tonumber(hex:sub(5,6), 16)
+                    local r = tonumber(hex:sub(1, 2), 16)
+                    local g = tonumber(hex:sub(3, 4), 16)
+                    local b = tonumber(hex:sub(5, 6), 16)
                     if r and g and b then
-                        color = Color3.fromRGB(r, g, b)
-                        h, s, v = toHSV(color)
+                        color  = Color3.fromRGB(r, g, b)
+                        h, s, v = Color3.toHSV(color)
                         Commit()
                     end
                 end
-            end)
-
-            -- Toggle expand
-            ToggleBtn.MouseButton1Click:Connect(function()
-                expanded = not expanded
-                Tween(PickerFrame, {Size = UDim2.new(1, 0, 0, expanded and PICKER_H or 36)}, 0.25)
             end)
 
             return RegisterElement({
@@ -1123,8 +1198,8 @@ function Aurora:CreateWindow(config)
                 OnChanged = OnChanged,
                 GetValue  = function() return color end,
                 SetValue  = function(c)
-                    color = c
-                    h, s, v = toHSV(c)
+                    color  = c
+                    h, s, v = Color3.toHSV(c)
                     Commit()
                 end,
             }, PickerFrame)
@@ -1195,7 +1270,8 @@ function Aurora:CreateWindow(config)
         return Tab
     end
 
-    local _dragDisconnect = MakeDraggable(MainFrame, TitleBar)
+    local _dragStop = MakeDraggable(MainFrame, TitleBar)
+    table.insert(windowConnections, {Disconnect = _dragStop})
 
     -- Intro animation
     MainFrame.Size     = UDim2.new(0, 0, 0, 0)
