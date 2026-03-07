@@ -1,6 +1,6 @@
 --// Aurora UI Library
 --// A minimalistic, beautiful UI library for Roblox
---// Version: 6.1.0
+--// Version: 6.2.0
 
 local Aurora = {}
 local TweenService     = game:GetService("TweenService")
@@ -513,7 +513,15 @@ function Aurora:CreateWindow(config)
             return f
         end
 
-        local function RegisterElement(element, frame)
+        -- ownedConns: UIS connections that belong exclusively to this element.
+        -- Added to windowConnections for Window:Destroy() cleanup, AND
+        -- disconnected + pruned immediately when element.Destroy() is called.
+        local function RegisterElement(element, frame, ownedConns)
+            ownedConns = ownedConns or {}
+            for _, c in ipairs(ownedConns) do
+                table.insert(windowConnections, c)
+            end
+
             if #Tab.Elements == 0 then
                 EmptyState.Visible = false
             end
@@ -521,6 +529,12 @@ function Aurora:CreateWindow(config)
             Tab.OnElementAdded:Fire(element)
 
             element.Destroy = function()
+                for _, c in ipairs(ownedConns) do
+                    if c and c.Disconnect then c:Disconnect() end
+                    for i, wc in ipairs(windowConnections) do
+                        if wc == c then table.remove(windowConnections, i) break end
+                    end
+                end
                 frame:Destroy()
                 for i, e in ipairs(Tab.Elements) do
                     if e == element then table.remove(Tab.Elements, i) break end
@@ -781,9 +795,8 @@ function Aurora:CreateWindow(config)
             local c4 = UserInputService.InputEnded:Connect(function(inp)
                 if inp.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
             end)
-            table.insert(windowConnections, c3)
-            table.insert(windowConnections, c4)
 
+            -- c1/c2 are frame-local (destroyed with frame); c3/c4 are UIS globals — pass as ownedConns
             return RegisterElement({
                 Frame     = frame,
                 OnChanged = OnChanged,
@@ -796,10 +809,8 @@ function Aurora:CreateWindow(config)
                     Knob.Position   = UDim2.new(f, -6, 0.5, -6)
                     ValueLabel.Text = tostring(val)
                 end,
-            }, frame)
+            }, frame, { c3, c4 })
         end
-
-        -- ── Dropdown ─────────────────────────
 
         function Tab:CreateDropdown(cfg)
             cfg = cfg or {}
@@ -1242,6 +1253,15 @@ function Aurora:CreateWindow(config)
                 Tween(Arrow, {Rotation = expanded and 180 or 0}, 0.2)
             end)
 
+            -- Register collapse so SetEnabled(false) closes an open multi-select
+            _dropdownCollapse[MultiFrame] = function()
+                if expanded then
+                    expanded = false
+                    Tween(MultiFrame, {Size = UDim2.new(1, 0, 0, 36)}, 0.2)
+                    Tween(Arrow, {Rotation = 0}, 0.2)
+                end
+            end
+
             return RegisterElement({
                 Frame     = MultiFrame,
                 OnChanged = OnChanged,
@@ -1497,7 +1517,6 @@ function Aurora:CreateWindow(config)
                     KeyBtn.Text = current == Enum.KeyCode.Unknown and "None" or current.Name
                 end
             end)
-            table.insert(windowConnections, cancelCon)
 
             return RegisterElement({
                 Frame     = frame,
@@ -1507,10 +1526,8 @@ function Aurora:CreateWindow(config)
                     current   = key
                     KeyBtn.Text = key == Enum.KeyCode.Unknown and "None" or key.Name
                 end,
-            }, frame)
+            }, frame, { cancelCon })
         end
-
-        -- ── ColorPicker ───────────────────────
 
         function Tab:CreateColorPicker(cfg)
             cfg = cfg or {}
@@ -1747,7 +1764,6 @@ function Aurora:CreateWindow(config)
             end)
             table.insert(windowConnections, svMove)
             table.insert(windowConnections, svEnd)
-
             -- Hue drag
             local hueDragging = false
             HueDrag.InputBegan:Connect(function(inp)
@@ -1766,8 +1782,6 @@ function Aurora:CreateWindow(config)
             local hueEnd = UserInputService.InputEnded:Connect(function(inp)
                 if inp.UserInputType == Enum.UserInputType.MouseButton1 then hueDragging = false end
             end)
-            table.insert(windowConnections, hueMove)
-            table.insert(windowConnections, hueEnd)
 
             -- Hex input: parse on Enter
             HexInput.FocusLost:Connect(function(enter)
@@ -1785,6 +1799,14 @@ function Aurora:CreateWindow(config)
                 end
             end)
 
+            -- Register collapse so SetEnabled(false) closes an open picker
+            _dropdownCollapse[PickerFrame] = function()
+                if expanded then
+                    expanded = false
+                    Tween(PickerFrame, {Size = UDim2.new(1, 0, 0, 36)}, 0.25)
+                end
+            end
+
             return RegisterElement({
                 Frame     = PickerFrame,
                 OnChanged = OnChanged,
@@ -1794,7 +1816,7 @@ function Aurora:CreateWindow(config)
                     h, s, v = Color3.toHSV(c)
                     Commit()
                 end,
-            }, PickerFrame)
+            }, PickerFrame, { svMove, svEnd, hueMove, hueEnd })
         end
 
         -- ── Label ─────────────────────────────
