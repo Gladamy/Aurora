@@ -1,6 +1,6 @@
 --// Aurora UI Library
 --// A minimalistic, beautiful UI library for Roblox
---// Version: 6.3.0
+--// Version: 6.4.0
 
 local Aurora = {}
 local TweenService     = game:GetService("TweenService")
@@ -329,11 +329,12 @@ function Aurora:CreateWindow(config)
     AddCorner(ContentContainer)
 
     -- Reflow ContentContainer whenever the sidebar width changes
-    TabContainer:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+    local reflowConn = TabContainer:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
         local w = math.clamp(TabContainer.AbsoluteSize.X, SIDEBAR_MIN, SIDEBAR_MAX)
         ContentContainer.Position = UDim2.new(0, 8 + w + SIDEBAR_GAP, 0, 48)
         ContentContainer.Size     = UDim2.new(1, -(8 + w + SIDEBAR_GAP + 8), 1, -56)
     end)
+    table.insert(windowConnections, reflowConn)
 
     -- Subtle bottom fade so sparse tabs don't end abruptly
     local FadeGradient = Create("Frame", {
