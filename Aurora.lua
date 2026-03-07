@@ -1,6 +1,6 @@
 --// Aurora UI Library
 --// A minimalistic, beautiful UI library for Roblox
---// Version: 6.2.0
+--// Version: 6.3.0
 
 local Aurora = {}
 local TweenService     = game:GetService("TweenService")
@@ -450,6 +450,7 @@ function Aurora:CreateWindow(config)
         })
 
         local Tab = {
+            Name           = tabName,
             Button         = TabButton,
             Content        = TabContent,
             Elements       = {},
@@ -2090,7 +2091,12 @@ function Aurora:CreateWindow(config)
                     Resize()
                 end,
 
-                GetRows = function() return rows end,
+                GetRows = function()
+                    -- Return a copy so callers can't mutate internal state
+                    local copy = {}
+                    for i, row in ipairs(rows) do copy[i] = row end
+                    return copy
+                end,
             }
 
             return RegisterElement(element, TableFrame)
