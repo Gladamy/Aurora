@@ -1,6 +1,6 @@
 --// Aurora UI Library
 --// A minimalistic, beautiful UI library for Roblox
---// Version: 6.4.0
+--// Version: 6.5.0
 
 local Aurora = {}
 local TweenService     = game:GetService("TweenService")
@@ -58,6 +58,17 @@ function Signal:Connect(fn)
             self._handlers[id] = nil
         end
     }
+end
+
+function Signal:Once(fn)
+    -- Fires fn exactly once then auto-disconnects.
+    -- Returns a handle with .Disconnect() in case you want to cancel before it fires.
+    local handle
+    handle = self:Connect(function(...)
+        handle.Disconnect()
+        fn(...)
+    end)
+    return handle
 end
 
 function Signal:Fire(...)
@@ -1879,6 +1890,143 @@ function Aurora:CreateWindow(config)
             }, frame)
         end
 
+        -- ── ProgressBar ───────────────────────
+
+        function Tab:CreateProgressBar(cfg)
+            cfg = cfg or {}
+            local value     = math.clamp(cfg.Default or 0, 0, 1)  -- always 0..1
+            local OnChanged = Signal.new()
+
+            local frame = BaseFrame(46)
+
+            local Label = Create("TextLabel", {
+                Parent             = frame,
+                Position           = UDim2.new(0, 12, 0, 6),
+                Size               = UDim2.new(1, -60, 0, 16),
+                BackgroundTransparency = 1,
+                Text               = cfg.Text or "Progress",
+                TextColor3         = Aurora.Config.Theme.TextMuted,
+                Font               = Aurora.Config.FontMedium,
+                TextSize           = 12,
+                TextXAlignment     = Enum.TextXAlignment.Left,
+            })
+
+            local PctLabel = Create("TextLabel", {
+                Parent             = frame,
+                Position           = UDim2.new(1, -50, 0, 6),
+                Size               = UDim2.new(0, 42, 0, 16),
+                BackgroundTransparency = 1,
+                Text               = "0%",
+                TextColor3         = Aurora.Config.Theme.TextMuted,
+                Font               = Aurora.Config.Font,
+                TextSize           = 12,
+                TextXAlignment     = Enum.TextXAlignment.Right,
+            })
+
+            local Track = Create("Frame", {
+                Parent           = frame,
+                Position         = UDim2.new(0, 10, 0, 30),
+                Size             = UDim2.new(1, -20, 0, 8),
+                BackgroundColor3 = Aurora.Config.Theme.Surface,
+                BorderSizePixel  = 0,
+            })
+            AddCorner(Track, UDim.new(1, 0))
+
+            local barColor = cfg.Color or Aurora.Config.Theme.Primary
+            local Fill = Create("Frame", {
+                Parent           = Track,
+                Size             = UDim2.new(value, 0, 1, 0),
+                BackgroundColor3 = barColor,
+                BorderSizePixel  = 0,
+            })
+            AddCorner(Fill, UDim.new(1, 0))
+
+            local function Apply(pct)
+                pct   = math.clamp(pct, 0, 1)
+                value = pct
+                Tween(Fill, {Size = UDim2.new(pct, 0, 1, 0)}, 0.2)
+                PctLabel.Text = math.floor(pct * 100) .. "%"
+                OnChanged:Fire(pct)
+            end
+
+            Apply(value)  -- seed initial display
+
+            return RegisterElement({
+                Frame     = frame,
+                OnChanged = OnChanged,
+                GetValue  = function() return value end,
+                SetValue  = function(pct) Apply(pct) end,
+                SetLabel  = function(t) Label.Text = tostring(t) end,
+                SetColor  = function(c)
+                    barColor              = c
+                    Fill.BackgroundColor3 = c
+                end,
+            }, frame)
+        end
+
+        -- ── StatusLabel ───────────────────────
+
+        function Tab:CreateStatusLabel(cfg)
+            cfg = cfg or {}
+            local typeColors = {
+                Info    = Aurora.Config.Theme.Primary,
+                Success = Aurora.Config.Theme.Success,
+                Warning = Aurora.Config.Theme.Warning,
+                Error   = Aurora.Config.Theme.Error,
+            }
+            local currentType = cfg.Type or "Info"
+            local OnChanged   = Signal.new()
+
+            local frame = Create("Frame", {
+                Parent             = TabContent,
+                Size               = UDim2.new(1, 0, 0, 24),
+                BackgroundTransparency = 1,
+            })
+
+            local Dot = Create("Frame", {
+                Parent           = frame,
+                Position         = UDim2.new(0, 2, 0.5, -4),
+                Size             = UDim2.new(0, 8, 0, 8),
+                BackgroundColor3 = typeColors[currentType],
+                BorderSizePixel  = 0,
+            })
+            AddCorner(Dot, UDim.new(1, 0))
+
+            local Lbl = Create("TextLabel", {
+                Parent             = frame,
+                Position           = UDim2.new(0, 16, 0, 0),
+                Size               = UDim2.new(1, -16, 1, 0),
+                BackgroundTransparency = 1,
+                Text               = cfg.Text or "",
+                TextColor3         = typeColors[currentType],
+                Font               = Aurora.Config.FontMedium,
+                TextSize           = 12,
+                TextXAlignment     = Enum.TextXAlignment.Left,
+                TextTruncate       = Enum.TextTruncate.AtEnd,
+            })
+
+            local function ApplyType(t)
+                currentType = t
+                local c = typeColors[t] or typeColors.Info
+                Dot.BackgroundColor3 = c
+                Lbl.TextColor3       = c
+            end
+
+            return RegisterElement({
+                Frame     = frame,
+                OnChanged = OnChanged,
+                GetValue  = function() return Lbl.Text end,
+                -- SetValue(text, type?) — type is optional
+                SetValue  = function(t, typ)
+                    Lbl.Text = tostring(t)
+                    if typ then ApplyType(typ) end
+                    OnChanged:Fire(Lbl.Text)
+                end,
+                SetText   = function(t) Lbl.Text = tostring(t) end,
+                SetType   = ApplyType,
+            }, frame)
+        end
+
         -- ── Table ─────────────────────────────
 
         function Tab:CreateTable(cfg)
@@ -1965,13 +2113,20 @@ function Aurora:CreateWindow(config)
             Create("UIListLayout", {Parent = Body, SortOrder = Enum.SortOrder.LayoutOrder})
 
             -- Internal: render a single row
-            local rowObjects = {}
+            local rowObjects     = {}
+            local rowColors      = {}   -- index → Color3 override (nil = use default)
+            local rowBaseSetters = {}   -- index → fn(color) that updates MouseLeave restore target
+
             local function RenderRow(rowData, index)
-                local isEven   = index % 2 == 0
+                local defaultColor = index % 2 == 0
+                    and Aurora.Config.Theme.Surface
+                    or  Aurora.Config.Theme.Background
+                local baseColor = rowColors[index] or defaultColor
+
                 local rowFrame = Create("Frame", {
                     Parent           = Body,
                     Size             = UDim2.new(1, 0, 0, rowH),
-                    BackgroundColor3 = isEven and Aurora.Config.Theme.Surface or Aurora.Config.Theme.Background,
+                    BackgroundColor3 = baseColor,
                     BorderSizePixel  = 0,
                     LayoutOrder      = index,
                 })
@@ -1991,7 +2146,13 @@ function Aurora:CreateWindow(config)
                     })
                 end
 
-                -- Hover + click
+                -- currentBase is upvalue shared between MouseLeave and rowBaseSetters
+                local currentBase = baseColor
+                rowBaseSetters[index] = function(c)
+                    currentBase           = c
+                    rowFrame.BackgroundColor3 = c
+                end
+
                 local rowBtn = Create("TextButton", {
                     Parent             = rowFrame,
                     Size               = UDim2.new(1, 0, 1, 0),
@@ -2002,7 +2163,7 @@ function Aurora:CreateWindow(config)
                     Tween(rowFrame, {BackgroundColor3 = Color3.fromRGB(40, 40, 55)}, 0.12)
                 end)
                 rowBtn.MouseLeave:Connect(function()
-                    Tween(rowFrame, {BackgroundColor3 = isEven and Aurora.Config.Theme.Surface or Aurora.Config.Theme.Background}, 0.12)
+                    Tween(rowFrame, {BackgroundColor3 = currentBase}, 0.12)
                 end)
                 rowBtn.MouseButton1Click:Connect(function()
                     OnRowClicked:Fire(index, rowData)
@@ -2028,10 +2189,11 @@ function Aurora:CreateWindow(config)
                 Frame        = TableFrame,
                 OnRowClicked = OnRowClicked,
 
-                -- Replace all rows at once
+                -- Replace all rows at once (clears row colours)
                 SetRows = function(newRows)
-                    rows = newRows
-                    -- Clear existing
+                    rows         = newRows
+                    rowColors    = {}
+                    rowBaseSetters = {}
                     for _, obj in ipairs(rowObjects) do obj:Destroy() end
                     rowObjects = {}
                     for i, rowData in ipairs(rows) do
@@ -2048,11 +2210,18 @@ function Aurora:CreateWindow(config)
                     Resize()
                 end,
 
-                -- Remove a row by index (1-based)
+                -- Remove a row by index, re-render all (alternating colours need reindex)
                 RemoveRow = function(index)
                     if not rows[index] then return end
                     table.remove(rows, index)
-                    -- Re-render all (alternating colours need reindex)
+                    -- Shift rowColors down
+                    local newColors = {}
+                    for i, c in pairs(rowColors) do
+                        if i > index then newColors[i - 1] = c
+                        elseif i < index then newColors[i] = c end
+                    end
+                    rowColors      = newColors
+                    rowBaseSetters = {}
                     for _, obj in ipairs(rowObjects) do obj:Destroy() end
                     rowObjects = {}
                     for i, rowData in ipairs(rows) do
@@ -2065,16 +2234,12 @@ function Aurora:CreateWindow(config)
                 SetCell = function(rowIndex, colIndex, value)
                     if not rows[rowIndex] then return end
                     rows[rowIndex][colIndex] = value
-                    -- Find and update label directly
                     local rowFrame = rowObjects[rowIndex]
                     if rowFrame then
                         local labels = {}
                         for _, c in ipairs(rowFrame:GetChildren()) do
-                            if c:IsA("TextLabel") then
-                                table.insert(labels, c)
-                            end
+                            if c:IsA("TextLabel") then table.insert(labels, c) end
                         end
-                        -- Labels are ordered by Position.X.Scale
                         table.sort(labels, function(a, b)
                             return a.Position.X.Scale < b.Position.X.Scale
                         end)
@@ -2084,16 +2249,36 @@ function Aurora:CreateWindow(config)
                     end
                 end,
 
-                -- Clear all rows
+                -- Highlight a row with a custom colour; persists across hover
+                SetRowColor = function(index, color)
+                    rowColors[index] = color
+                    if rowBaseSetters[index] then
+                        rowBaseSetters[index](color)
+                    end
+                end,
+
+                -- Remove a custom row colour, restore default even/odd
+                ClearRowColor = function(index)
+                    rowColors[index] = nil
+                    if rowBaseSetters[index] then
+                        local defaultColor = index % 2 == 0
+                            and Aurora.Config.Theme.Surface
+                            or  Aurora.Config.Theme.Background
+                        rowBaseSetters[index](defaultColor)
+                    end
+                end,
+
+                -- Clear all rows (also clears row colours)
                 Clear = function()
-                    rows = {}
+                    rows           = {}
+                    rowColors      = {}
+                    rowBaseSetters = {}
                     for _, obj in ipairs(rowObjects) do obj:Destroy() end
                     rowObjects = {}
                     Resize()
                 end,
 
                 GetRows = function()
-                    -- Return a copy so callers can't mutate internal state
                     local copy = {}
                     for i, row in ipairs(rows) do copy[i] = row end
                     return copy
