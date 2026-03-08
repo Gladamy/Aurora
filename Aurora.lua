@@ -1,6 +1,6 @@
 --// Aurora UI Library
 --// A minimalistic, beautiful UI library for Roblox
---// Version: 6.5.0
+--// Version: 6.6.0
 
 local Aurora = {}
 local TweenService     = game:GetService("TweenService")
@@ -2025,6 +2025,155 @@ function Aurora:CreateWindow(config)
                 SetText   = function(t) Lbl.Text = tostring(t) end,
                 SetType   = ApplyType,
             }, frame)
+        end
+
+        -- ── Row ───────────────────────────────
+        --
+        -- Places multiple elements side-by-side in a single horizontal strip.
+        -- Each spec: { type = "Button"|"Toggle"|..., proportion = 0..1, cfg = {...} }
+        -- Proportions are normalised automatically if they don't sum to 1.
+        -- Returns an array of the created elements in order.
+        --
+        -- Usage:
+        --   local els = Tab:CreateRow({
+        --       { type = "NumberInput", proportion = 0.35, cfg = { Text = "Qty", Min=1, Max=99, Default=1 } },
+        --       { type = "Button",      proportion = 0.65, cfg = { Text = "Buy", Callback = fn } },
+        --   })
+        --   local qty = els[1].GetValue()
+
+        function Tab:CreateRow(specs)
+            specs = specs or {}
+
+            -- Normalise proportions
+            local total = 0
+            for _, s in ipairs(specs) do total = total + (s.proportion or 1) end
+            if total == 0 then total = 1 end
+
+            -- Determine row height = tallest element type in the spec list
+            local TYPE_H = {
+                Button        = 36, Toggle     = 36, Slider        = 46,
+                Dropdown      = 36, SearchDropdown = 36, MultiSelect = 36,
+                Input         = 54, NumberInput = 54, Keybind      = 36,
+                ColorPicker   = 36, Label       = 22, Section      = 28,
+                ProgressBar   = 46, StatusLabel = 24,
+            }
+            local rowH = 36
+            for _, s in ipairs(specs) do
+                local h = TYPE_H[s.type or "Button"] or 36
+                if h > rowH then rowH = h end
+            end
+
+            -- Outer row container (transparent, not a BaseFrame)
+            local RowContainer = Create("Frame", {
+                Parent             = TabContent,
+                Size               = UDim2.new(1, 0, 0, rowH),
+                BackgroundTransparency = 1,
+                BorderSizePixel    = 0,
+            })
+
+            local GAP        = 6   -- px gap between cells
+            local numCells   = #specs
+            local totalGap   = GAP * (numCells - 1)
+
+            -- Build cells and create elements inside each
+            local elements  = {}
+            local allOwned  = {}   -- accumulated ownedConns from all children
+            local xOffset   = 0
+
+            -- Temporarily redirect TabContent so Tab:Create* deposits frames into our cell.
+            -- We restore it after each cell creation.
+            local realTabContent = TabContent
+
+            for i, spec in ipairs(specs) do
+                local prop      = (spec.proportion or 1) / total
+                local cellW_abs = math.floor(prop * (realTabContent.AbsoluteSize.X - totalGap))
+                local cellX     = xOffset
+
+                -- Cell wrapper — sized proportionally, absolutely positioned
+                local Cell = Create("Frame", {
+                    Parent             = RowContainer,
+                    Position           = UDim2.new(0, cellX, 0, 0),
+                    Size               = UDim2.new(prop, -math.floor(totalGap * prop), 1, 0),
+                    BackgroundTransparency = 1,
+                    BorderSizePixel    = 0,
+                    ClipsDescendants   = false,
+                })
+
+                -- Redirect Tab:Create* to parent into Cell
+                TabContent = Cell
+
+                local typ    = spec.type or "Button"
+                local cfg    = spec.cfg  or {}
+                local el
+
+                if     typ == "Button"        then el = Tab:CreateButton(cfg)
+                elseif typ == "Toggle"        then el = Tab:CreateToggle(cfg)
+                elseif typ == "Slider"        then el = Tab:CreateSlider(cfg)
+                elseif typ == "Dropdown"      then el = Tab:CreateDropdown(cfg)
+                elseif typ == "SearchDropdown" then el = Tab:CreateSearchDropdown(cfg)
+                elseif typ == "MultiSelect"   then el = Tab:CreateMultiSelect(cfg)
+                elseif typ == "Input"         then el = Tab:CreateInput(cfg)
+                elseif typ == "NumberInput"   then el = Tab:CreateNumberInput(cfg)
+                elseif typ == "Keybind"       then el = Tab:CreateKeybind(cfg)
+                elseif typ == "ColorPicker"   then el = Tab:CreateColorPicker(cfg)
+                elseif typ == "ProgressBar"   then el = Tab:CreateProgressBar(cfg)
+                elseif typ == "StatusLabel"   then el = Tab:CreateStatusLabel(cfg)
+                elseif typ == "Label"         then el = Tab:CreateLabel(cfg.Text or "")
+                elseif typ == "Section"       then el = Tab:CreateSection(cfg.Text or "")
+                else
+                    warn("[Aurora CreateRow] Unknown type: " .. tostring(typ))
+                    TabContent = realTabContent
+                    continue
+                end
+
+                -- Restore real TabContent before next cell
+                TabContent = realTabContent
+
+                if el and el.Frame then
+                    -- Stretch element frame to fill the cell fully
+                    el.Frame.Size     = UDim2.new(1, 0, 1, 0)
+                    el.Frame.Position = UDim2.new(0, 0, 0, 0)
+                    el.Frame.Parent   = Cell
+                end
+
+                xOffset = xOffset + math.floor(prop * 100) -- (layout is UDim-based, gap handled by Size)
+
+                table.insert(elements, el)
+            end
+
+            -- Row-level element: Destroy tears down all children + container
+            -- SetVisible/SetEnabled delegate to all children
+            local rowElement = {
+                Frame = RowContainer,
+            }
+
+            rowElement.Destroy = function()
+                for _, el in ipairs(elements) do
+                    if el and el.Destroy then el.Destroy() end
+                end
+                RowContainer:Destroy()
+                for i, e in ipairs(Tab.Elements) do
+                    if e == rowElement then table.remove(Tab.Elements, i) break end
+                end
+                if #Tab.Elements == 0 then EmptyState.Visible = true end
+            end
+
+            rowElement.SetVisible = function(v)
+                RowContainer.Visible = v
+            end
+
+            rowElement.SetEnabled = function(enabled)
+                for _, el in ipairs(elements) do
+                    if el and el.SetEnabled then el.SetEnabled(enabled) end
+                end
+            end
+
+            -- Register the row container itself so it participates in EmptyState tracking
+            if #Tab.Elements == 0 then EmptyState.Visible = false end
+            table.insert(Tab.Elements, rowElement)
+            Tab.OnElementAdded:Fire(rowElement)
+
+            return elements  -- caller gets the array of child elements
         end
 
         -- ── Table ─────────────────────────────
