@@ -894,6 +894,140 @@ end
 
 ---
 
+### Profile System
+
+The Config system supports multiple named profiles, allowing users to switch between different configuration sets instantly.
+
+#### `Config:EnableProfiles()`
+
+Enable profile support on a Config instance. Must be called before using other profile methods.
+
+```lua
+local Config = Aurora:CreateConfig({
+    Name    = "GardenShovel",
+    Version = 1,
+    Exclude = {"webhookUrl"},
+})
+
+-- Enable profiles (stores in AuroraConfigs/Profiles_GardenShovel/)
+Config:EnableProfiles()
+```
+
+---
+
+#### `Config:CreateProfile(name) → bool`
+
+Create a new named profile. Returns `true` on success, `false` if profile already exists or name is invalid.
+
+```lua
+local ok = Config:CreateProfile("PVP Build")
+if ok then
+    print("Created PVP Build profile")
+end
+```
+
+---
+
+#### `Config:DeleteProfile(name) → bool`
+
+Delete a profile. Cannot delete "default" or the currently active profile.
+
+```lua
+Config:DeleteProfile("Old Build")
+```
+
+---
+
+#### `Config:ListProfiles() → table`
+
+Get a list of all profile names.
+
+```lua
+local profiles = Config:ListProfiles()
+for _, name in ipairs(profiles) do
+    print("Profile:", name)
+end
+-- Output: "default", "PVP Build", "Farming Build"
+```
+
+---
+
+#### `Config:GetCurrentProfile() → string`
+
+Get the currently active profile name.
+
+```lua
+print("Using profile:", Config:GetCurrentProfile())
+```
+
+---
+
+#### `Config:SwitchProfile(name) → bool`
+
+Switch to a different profile. Saves current profile first, then loads the new one. Returns `true` on success.
+
+```lua
+-- Switch to farming configuration
+Config:SwitchProfile("Farming Build")
+
+-- All UI elements update to reflect the new profile's values
+```
+
+---
+
+### Full Profile Example
+
+```lua
+local Aurora = loadstring(game:HttpGet(url))()
+local Window = Aurora:CreateWindow({ Title = "Multi-Profile Script" })
+local SettingsTab = Window:CreateTab({ Name = "Settings" })
+local CombatTab = Window:CreateTab({ Name = "Combat" })
+
+-- Create config and enable profiles
+local Config = Aurora:CreateConfig({
+    Name    = "MyScript",
+    Version = 1,
+})
+Config:EnableProfiles()
+
+-- Profile selector UI
+SettingsTab:CreateSection("Profiles")
+
+local profileDropdown = SettingsTab:CreateDropdown({
+    Text    = "Active Profile",
+    Options = Config:ListProfiles(),
+    Default = Config:GetCurrentProfile(),
+    Callback = function(selected)
+        Config:SwitchProfile(selected)
+    end,
+})
+
+-- Create new profile
+SettingsTab:CreateInput({ Text = "New Profile Name", Placeholder = "Enter name..." })
+SettingsTab:CreateButton({
+    Text = "Create Profile",
+    Callback = function()
+        local name = -- get from input
+        if Config:CreateProfile(name) then
+            Config:SwitchProfile(name)
+        end
+    end,
+})
+
+-- Combat settings (per-profile)
+CombatTab:CreateSection("Combat Settings")
+
+local autoAttack = CombatTab:CreateToggle({ Text = "Auto Attack", Default = false })
+Config:Register("autoAttack", autoAttack)
+
+local attackRange = CombatTab:CreateSlider({ Text = "Range", Min = 5, Max = 50, Default = 20 })
+Config:Register("attackRange", attackRange)
+
+-- Now each profile has separate autoAttack and attackRange values!
+```
+
+---
+
 ### Supported Value Types
 
 The Config system automatically serializes and deserializes:
