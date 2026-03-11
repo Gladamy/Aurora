@@ -374,7 +374,7 @@ function Aurora:CreateWindow(config)
             Size     = UDim2.new(0, 0, 0, 0),
             Position = UDim2.new(0, cx, 0, cy),
         }, 0.3)
-        task.wait(0.3)
+        wait(0.3)
         for _, c in ipairs(windowConnections) do
             if c and c.Disconnect then c:Disconnect() end
         end
@@ -503,9 +503,12 @@ function Aurora:CreateWindow(config)
                 if not excludeMap[id] and data.persist ~= false then
                     local el = data.element
                     if el.OnChanged then
-                        local conn = el.OnChanged:Connect(function()
-                            if saveDebounce then task.cancel(saveDebounce) end
-                            saveDebounce = task.delay(Aurora.Config.Storage.Debounce, function()
+                        local conn
+                        el.OnChanged:Connect(function()
+                            if saveDebounce then
+                                saveDebounce:Disconnect()
+                            end
+                            saveDebounce = delay(Aurora.Config.Storage.Debounce, function()
                                 if autoSaveEnabled and configKey then
                                     self:SaveConfig(configKey)
                                 end
@@ -1007,7 +1010,7 @@ function Aurora:CreateWindow(config)
                 Size               = UDim2.new(1, -60, 0, 16),
                 BackgroundTransparency = 1,
                 Text               = cfg.Text or "Slider",
-                TextColor3         = Aurora.Config.Theme.Text,
+                TextColor3         = Aurora.Config.Theme.TextMuted,
                 Font               = Aurora.Config.FontMedium,
                 TextSize           = 14,
                 TextXAlignment     = Enum.TextXAlignment.Left,
@@ -2088,7 +2091,7 @@ function Aurora:CreateWindow(config)
                 end
             end)
 
-            -- Register collapse so SetEnabled(false) closes an open picker
+            -- Register collapse so SetEnabled(false) can close an open picker
             _dropdownCollapse[PickerFrame] = function()
                 if expanded then
                     expanded = false
@@ -2664,9 +2667,9 @@ function Aurora:Notify(cfg)
     Tween(frame,    {Position = UDim2.new(1, NOTIF_X, 1, posY)}, 0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
     Tween(Progress, {Size = UDim2.new(0, 0, 0, 2)}, duration, Enum.EasingStyle.Linear)
 
-    task.delay(duration, function()
+    delay(duration, function()
         Tween(frame, {Position = UDim2.new(1, 20, 1, posY)}, 0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
-        task.wait(0.35)
+        wait(0.35)
         frame:Destroy()
         for i, e in ipairs(notifQueue) do
             if e == entry then table.remove(notifQueue, i) break end
