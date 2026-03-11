@@ -1,5 +1,5 @@
 # Aurora UI Library
-**Version 6.5.0** — A minimalistic, production-quality UI library for Roblox executors.
+**Version 6.6.0** — A minimalistic, production-quality UI library for Roblox executors.
 
 ---
 
@@ -734,6 +734,243 @@ Settings:CreateDropdown({
         Aurora:SetTheme({ Primary = map[val], Glow = map[val] })
     end,
 })
+
+## Config System — Persistent Settings
+
+**Version 6.6.0+** — Automatically save and restore UI element values across script restarts.
+
+**Executor Support:** Delta, Velocity, Volt (uses `writefile`/`readfile`).
+
+### Quick Start
+
+```lua
+local Aurora = loadstring(game:HttpGet(url))()
+local Window = Aurora:CreateWindow({ Title = "My Script" })
+local Tab = Window:CreateTab({ Name = "Settings" })
+
+-- Create a config (auto-loads on creation, auto-saves on changes)
+local Config = Aurora:CreateConfig({
+    Name     = "MyScript",      -- unique name for the config file
+    Version  = 1,               -- for future migrations
+    Exclude  = {"webhook"},     -- keys that should NEVER be saved
+})
+
+-- Create UI elements and register them
+local toggle = Tab:CreateToggle({ Text = "Auto Farm", Default = false })
+Config:Register("autoFarm", toggle)
+
+local slider = Tab:CreateSlider({
+    Text = "Speed", Min = 16, Max = 200, Default = 16
+})
+Config:Register("speed", slider)
+
+-- That's it. Values are saved automatically and restored on next run.
+```
+
+---
+
+### `Aurora:CreateConfig(options) → Config`
+
+Creates a persistent configuration manager.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `Name` | string | `"AuroraConfig"` | Unique identifier for this config |
+| `Version` | number | `1` | Config version for migrations |
+| `AutoSave` | boolean | `true` | Automatically save when values change |
+| `AutoLoad` | boolean | `true` | Automatically load on creation |
+| `Exclude` | table (array) | `{}` | Keys that should never be saved (e.g., `{"webhook", "password"}`) |
+
+Files are stored in `AuroraConfigs/Name_v{Version}.json`.
+
+---
+
+### `Config:Register(key, element, options?)`
+
+Bind a UI element to a config key. The element's value will be auto-saved on change and restored on load.
+
+```lua
+Config:Register("myToggle", myToggle)
+Config:Register("mySlider", mySlider, { Default = 50 })
+Config:Register("myInput", myInput, {
+    Default = "",
+    Validate = function(v) return #v > 0 end,  -- reject empty strings
+})
+```
+
+| Option | Type | Description |
+|---|---|---|
+| `Default` | any | Value to use if no saved value exists |
+| `Validate` | function(value) → boolean | Reject invalid values before applying |
+| `Transform` | function(value) → value | Modify value before applying to element |
+
+---
+
+### `Config:Get(key, default?) → value`
+
+Retrieve a raw config value (bypassing the UI element).
+
+```lua
+local speed = Config:Get("speed", 16)
+```
+
+---
+
+### `Config:Set(key, value)`
+
+Set a raw config value and update the bound UI element.
+
+```lua
+Config:Set("speed", 100)  -- updates the slider too
+```
+
+---
+
+### `Config:OnChanged(key, callback) → Connection`
+
+Subscribe to changes on a specific key.
+
+```lua
+Config:OnChanged("autoFarm", function(newValue)
+    print("Auto farm is now:", newValue)
+end)
+```
+
+---
+
+### `Config:Save()` / `Config:Load()` / `Config:Reset()`
+
+Manual control when `AutoSave`/`AutoLoad` are disabled.
+
+```lua
+local Config = Aurora:CreateConfig({
+    Name     = "MyScript",
+    AutoSave = false,  -- manual control
+    AutoLoad = false,
+})
+
+-- Load when ready
+Config:Load()
+
+-- Save when button clicked
+Tab:CreateButton({
+    Text = "Save Settings",
+    Callback = function() Config:Save() end,
+})
+
+-- Reset to defaults
+Tab:CreateButton({
+    Text = "Reset to Defaults",
+    Callback = function() Config:Reset() end,
+})
+```
+
+---
+
+### `Config:Export() → string` / `Config:Import(jsonString) → bool`
+
+Export config as JSON string for sharing or backup. Import parses and applies a JSON config.
+
+```lua
+-- Export to share
+local json = Config:Export()
+print(json)  -- copy this string
+
+-- Import from another user
+local success = Config:Import('{"autoFarm":true,"speed":150}')
+```
+
+---
+
+### `Config:IsExcluded(key) → bool`
+
+Check if a key is in the exclusion list (will never be saved).
+
+```lua
+if not Config:IsExcluded("webhook") then
+    Config:Register("webhook", webhookInput)
+end
+```
+
+---
+
+### Supported Value Types
+
+The Config system automatically serializes and deserializes:
+
+- **Primitives:** `string`, `number`, `boolean`, `nil`
+- **Roblox Types:** `Color3`, `EnumItem`, `UDim`, `UDim2`, `Vector2`, `Vector3`
+- **Tables:** Nested tables with any supported values
+
+---
+
+### Full Example: Garden Shovel Script
+
+```lua
+local Aurora = loadstring(game:HttpGet(url))()
+local Window = Aurora:CreateWindow({ Title = "Garden Shovel" })
+
+local SettingsTab = Window:CreateTab({ Name = "Settings" })
+local ShovelTab   = Window:CreateTab({ Name = "Shovel" })
+
+-- Config with webhook excluded (security)
+local Config = Aurora:CreateConfig({
+    Name    = "GardenShovel",
+    Version = 1,
+    Exclude = {"webhookUrl"},  -- NEVER save webhook URLs
+})
+
+-- Settings Tab
+SettingsTab:CreateSection("Discord")
+local webhookInput = SettingsTab:CreateInput({
+    Text = "Webhook URL",
+    Placeholder = "https://discord.com/api/webhooks/...",
+})
+-- Don't register webhook - we excluded it
+
+local antiAfkToggle = SettingsTab:CreateToggle({ Text = "Anti-AFK", Default = false })
+Config:Register("antiAfk", antiAfkToggle)
+
+-- Shovel Tab
+ShovelTab:CreateSection("Filters")
+local fruitMulti = ShovelTab:CreateMultiSelect({
+    Text    = "Fruit Types",
+    Options = {"Apple", "Banana", "Cherry"},
+    Default = {},
+})
+Config:Register("shovelFruits", fruitMulti)
+
+local rarityMulti = ShovelTab:CreateMultiSelect({
+    Text    = "Rarities to Shovel",
+    Options = {"Normal", "Silver", "Gold"},
+    Default = {"Normal"},
+})
+Config:Register("shovelRarities", rarityMulti)
+
+local weightSlider = ShovelTab:CreateSlider({
+    Text    = "Max Weight (KG)",
+    Min     = 0,
+    Max     = 10,
+    Default = 0,
+    Step    = 0.1,
+})
+Config:Register("maxWeight", weightSlider, { Default = 0 })
+
+-- All values auto-save and restore on next run!
+```
+
+---
+
+### Legacy API
+
+For simple scripts that don't need element binding:
+
+```lua
+-- Save raw data table
+Aurora.ConfigSystem:Save("MyData", { speed = 100, enabled = true })
+
+-- Load it back
+local data = Aurora.ConfigSystem:Load("MyData") or { speed = 16, enabled = false }
 ```
 
 ---
@@ -741,12 +978,6 @@ Settings:CreateDropdown({
 ---
 
 ## Troubleshooting
-
-### UI doesn't appear after running the script
-
-**Cause:** Your executor cached the old version of `Aurora.lua` from a previous `HttpGet` call.
-
-**Fix:** Wait 30–60 seconds and re-run. Some executors cache HTTP responses aggressively. If it still fails, try appending a cache-busting query string:
 
 ```lua
 local url = "https://raw.githubusercontent.com/Gladamy/Aurora/refs/heads/main/Aurora.lua"
@@ -850,6 +1081,7 @@ end)
 
 | Version | Changes |
 |---|---|
+| 6.6.0 | **New:** `Aurora:CreateConfig` — Persistent settings system with auto-save/load, element binding, Export/Import, and excluded keys for security (webhooks, passwords). Supports Delta, Velocity, Volt executors. |
 | 6.5.0 | **New:** `Tab:CreateProgressBar` · `Tab:CreateStatusLabel` · `CreateTable.SetRowColor` / `ClearRowColor` (with correct MouseLeave restore via per-row upvalue) · `Signal:Once` single-fire connections |
 | 6.4.0 | `TabContainer` reflow connection stored in `windowConnections` |
 | 6.2.0 | `element.Destroy()` disconnects owned UIS connections (Slider/Keybind/ColorPicker) · `MultiSelect` + `ColorPicker` register in `_dropdownCollapse` · `RegisterElement` accepts `ownedConns` |
@@ -862,204 +1094,6 @@ end)
 | 2.1.0 | `SelectTab` fixed · glyph control buttons |
 | 2.0.0 | Global/memory leak fixes · `CreateInput` · notification queue |
 | 1.0.0 | Initial release |
-
----
-
-## Config System
-
-Aurora supports automatic persistence of UI state across sessions. When enabled, all element values (toggles, sliders, dropdowns, etc.) are saved to a JSON file and restored when the script runs again.
-
-### Quick Start
-
-```lua
-local Window = Aurora:CreateWindow({ Title = "My Script" })
-
--- Enable auto-save with default key
-Window:EnableAutoSave()
-
--- Or specify a custom config key
-Window:EnableAutoSave({
-    Key = "MyScript_v1",
-    AutoSave = true,  -- Save on every change (default: true)
-})
-```
-
-### Window Methods
-
-#### `Window:EnableAutoSave(config) → boolean`
-
-Enables automatic saving/loading. Returns `true` if an existing config was loaded.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `Key` | string | `"default"` | Unique identifier for this config |
-| `AutoSave` | boolean | `true` | Save automatically when values change |
-| `Exclude` | table | `{}` | Array of element ConfigIds to skip |
-
-```lua
--- Load existing or create new
-local wasLoaded = Window:EnableAutoSave({ Key = "CombatSettings" })
-if wasLoaded then
-    Aurora:Notify({ Title = "Config Loaded", Type = "Success" })
-end
-```
-
-#### `Window:SaveConfig(key) → boolean`
-
-Manually save current state. If `key` is omitted, uses the key from `EnableAutoSave`.
-
-```lua
-Window:SaveConfig("Backup_" .. os.time())
-```
-
-#### `Window:LoadConfig(key) → boolean`
-
-Manually load a config. Returns `true` if successful.
-
-```lua
-Window:LoadConfig("Backup_1234567890")
-```
-
-#### `Window:DeleteConfig(key) → boolean`
-
-Delete a saved config file.
-
-```lua
-Window:DeleteConfig("old_config")
-```
-
-#### `Window:ListConfigs() → table`
-
-Returns array of config names available in the folder.
-
-```lua
-local configs = Window:ListConfigs()
-for _, name in ipairs(configs) do
-    print("Found config: " .. name)
-end
-```
-
-#### `Window:SetConfigFolder(path)`
-
-Change the storage folder (default: `"AuroraConfigs"`).
-
-```lua
-Window:SetConfigFolder("MyScript/Configs")
-```
-
-### Element Config IDs
-
-By default, elements are identified by their `Text` property. You can override this with `ConfigId`:
-
-```lua
-Tab:CreateToggle({
-    Text = "God Mode",
-    ConfigId = "god_mode_toggle",  -- Used in config file
-    Default = false,
-})
-```
-
-### Runtime-Only Elements
-
-Some elements (like a "Run Script" toggle) shouldn't persist across sessions. Use `Persist = false`:
-
-```lua
-Tab:CreateToggle({
-    Text = "Run Quests",
-    Persist = false,  -- Never save this value
-    Default = false,
-})
-```
-
-### Config File Format
-
-Configs are stored as JSON in the workspace folder:
-
-```json
-{
-    "god_mode_toggle": {
-        "type": "Toggle",
-        "tab": "Main",
-        "value": true
-    },
-    "walk_speed": {
-        "type": "Slider",
-        "tab": "Movement",
-        "value": 32
-    },
-    "theme_color": {
-        "type": "ColorPicker",
-        "tab": "Settings",
-        "value": { "__type": "Color3", "r": 1, "g": 0.5, "b": 0 }
-    }
-}
-```
-
-### Events
-
-#### `Window.OnConfigLoaded`
-
-Fired when a config is successfully loaded.
-
-```lua
-Window.OnConfigLoaded:Connect(function(key, data)
-    print("Loaded config: " .. key)
-end)
-```
-
-### Profile System Example
-
-```lua
-local profiles = { "PvP", "Farming", "Questing" }
-local currentProfile = "PvP"
-
-Tab:CreateDropdown({
-    Text = "Profile",
-    Options = profiles,
-    Default = currentProfile,
-    Callback = function(profile)
-        Window:SaveConfig(currentProfile)
-        Window:LoadConfig(profile)
-        currentProfile = profile
-    end,
-})
-```
-
-### Supported Element Types
-
-All element types support config persistence:
-
-| Element | Value Type | Notes |
-|---------|------------|-------|
-| `Toggle` | `boolean` | |
-| `Slider` | `number` | |
-| `Dropdown` | `string` | Selected option |
-| `SearchDropdown` | `string` | Selected option |
-| `MultiSelect` | `table` | Array of selected strings |
-| `Input` | `string` | Text content |
-| `NumberInput` | `number` | |
-| `Keybind` | `EnumItem` | Serialized as Enum.KeyCode |
-| `ColorPicker` | `Color3` | RGB reconstruction |
-
-### Manual Control
-
-Disable auto-save and control saving manually:
-
-```lua
-Window:EnableAutoSave({
-    Key = "Manual",
-    AutoSave = false,
-})
-
--- Save only on button press
-Tab:CreateButton({
-    Text = "Save Settings",
-    Callback = function()
-        Window:SaveConfig()
-        Aurora:Notify({ Title = "Settings Saved!", Type = "Success" })
-    end,
-})
-```
 
 ---
 
