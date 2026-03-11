@@ -39,367 +39,6 @@ Aurora.Config = {
 }
 
 -- ─────────────────────────────────────────────
---  ConfigSystem — persistent storage for UI state
--- ─────────────────────────────────────────────
-
-Aurora.ConfigSystem = {}
-local HttpService = game:GetService("HttpService")
-
--- Base64 encoding/decoding
-local base64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-
-local function base64encode(data)
-    local out = {}
-    local b64 = base64chars
-    for i = 1, #data, 3 do
-        local a, b, c = data:byte(i, i + 2)
-        local buf = a << 16 | (b or 0) << 8 | (c or 0)
-        out[#out+1] = b64:sub((buf >> 18) & 63 + 1, (buf >> 18) & 63 + 1)
-        out[#out+1] = b64:sub((buf >> 12) & 63 + 1, (buf >> 12) & 63 + 1)
-        out[#out+1] = b and b64:sub((buf >> 6) & 63 + 1, (buf >> 6) & 63 + 1) or '='
-        out[#out+1] = c and b64:sub(buf & 63 + 1, buf & 63 + 1) or '='
-    end
-    return table.concat(out)
-end
-
-local function base64decode(data)
-    local out = {}
-    local b64 = {}
-    for i = 1, 64 do b64[base64chars:sub(i,i)] = i - 1 end
-    b64['='] = nil
-    for i = 1, #data, 4 do
-        local a, b, c, d = data:byte(i, i + 3)
-        a, b, c, d = b64[string.char(a)], b64[string.char(b)], b64[string.char(c)], b64[string.char(d)]
-        local buf = (a or 0) << 18 | (b or 0) << 12 | (c or 0) << 6 | (d or 0)
-        out[#out+1] = string.char((buf >> 16) & 255)
-        if c then out[#out+1] = string.char((buf >> 8) & 255) end
-        if d then out[#out+1] = string.char(buf & 255) end
-    end
-    return table.concat(out)
-end
-
--- File I/O utilities (cross-executor compatible)
-local function IsFileIOAvailable()
-    return type(isfile) == "function" and 
-           type(readfile) == "function" and 
-           type(writefile) == "function" and
-           type(listfiles) == "function" and
-           type(makefolder) == "function"
-end
-
-local function GetStorageDirectory()
-    return "AuroraConfigs/"
-end
-
-local function EnsureDirectory()
-    if not IsFileIOAvailable() then return false end
-    local dir = GetStorageDirectory()
-    if not isfile(dir) then
-        pcall(makefolder, dir)
-    end
-    return true
-end
-
--- Color3 serialization
-local function SerializeColor(color)
-    return {
-        r = math.round(color.R * 255),
-        g = math.round(color.G * 255),
-        b = math.round(color.B * 255)
-    }
-end
-
-local function DeserializeColor(data)
-    return Color3.fromRGB(data.r, data.g, data.b)
-end
-
--- KeyCode serialization
-local function SerializeKeybind(key)
-    if key == Enum.KeyCode.Unknown then return nil end
-    return key.Name
-end
-
-local function DeserializeKeybind(str)
-    if not str then return Enum.KeyCode.Unknown end
-    return Enum.KeyCode[str] or Enum.KeyCode.Unknown
-end
-
--- Generate unique element key
-local function GenerateElementKey(tabName, elementText, elementType, index)
-    local cleanText = tostring(elementText or elementType):gsub("[^%w]", "")
-    return string.format("%s_%s_%s_%d", tabName, cleanText, elementType, index)
-end
-
--- Aurora.ConfigSystem API
-
-function Aurora.ConfigSystem:ExportToString(data)
-    local json = HttpService:JSONEncode(data)
-    return base64encode(json)
-end
-
-function Aurora.ConfigSystem:ImportFromString(str)
-    -- Try base64 first
-    local ok, decoded = pcall(base64decode, str)
-    if ok and decoded then
-        local ok2, data = pcall(HttpService.JSONDecode, HttpService, decoded)
-        if ok2 then return data end
-    end
-    -- Try plain JSON
-    local ok3, data = pcall(HttpService.JSONDecode, HttpService, str)
-    if ok3 then return data end
-    return nil
-end
-
-function Aurora.ConfigSystem:SerializeValue(value, elementType)
-    if elementType == "ColorPicker" then
-        return SerializeColor(value)
-    elseif elementType == "Keybind" then
-        return SerializeKeybind(value)
-    else
-        return value
-    end
-end
-
-function Aurora.ConfigSystem:DeserializeValue(value, elementType)
-    if elementType == "ColorPicker" then
-        return DeserializeColor(value)
-    elseif elementType == "Keybind" then
-        return DeserializeKeybind(value)
-    else
-        return value
-    end
-end
-
--- ─────────────────────────────────────────────
---  CreateConfigTab — helper for UI config management
--- ─────────────────────────────────────────────
-
-function Aurora:CreateConfigTab(window, options)
-    options = options or {}
-    local tabName = options.Name or "Config"
-    local tabIcon = options.Icon or ""
-    
-    local tab = window:CreateTab({Name = tabName, Icon = tabIcon})
-    
-    -- Section: Config Management
-    tab:CreateSection("Config Management")
-    
-    -- Config name input
-    local configNameInput = tab:CreateInput({
-        Text = "Config Name",
-        Placeholder = window.Config.ConfigName or "default",
-        ConfigId = "config_name"
-    })
-    
-    -- Status label for feedback
-    local statusLabel = tab:CreateStatusLabel({
-        Text = "Ready",
-        Type = "Info"
-    })
-    
-    -- Helper to update status
-    local function SetStatus(text, typ)
-        statusLabel.SetValue(text, typ or "Info")
-        task.delay(3, function()
-            if statusLabel.GetValue() == text then
-                statusLabel.SetValue("Ready", "Info")
-            end
-        end)
-    end
-    
-    -- Save button
-    tab:CreateButton({
-        Text = " Save Config",
-        Callback = function()
-            local name = configNameInput.GetValue()
-            if name and name ~= "" then
-                window.Config.ConfigName = name
-            end
-            local success = window:SaveConfig()
-            if success then
-                SetStatus("Config saved!", "Success")
-            else
-                SetStatus("Failed to save", "Error")
-            end
-        end
-    })
-    
-    -- Load button
-    tab:CreateButton({
-        Text = " Load Config",
-        Callback = function()
-            local name = configNameInput.GetValue()
-            if name and name ~= "" then
-                window.Config.ConfigName = name
-            end
-            local success = window:LoadConfig()
-            if success then
-                SetStatus("Config loaded!", "Success")
-            else
-                SetStatus("Config not found", "Warning")
-            end
-        end
-    })
-    
-    -- Reset button
-    tab:CreateButton({
-        Text = " Reset to Defaults",
-        Callback = function()
-            window:ResetConfig()
-            SetStatus("Config reset!", "Warning")
-        end
-    })
-    
-    -- Section: Auto Save
-    tab:CreateSection("Auto Save")
-    
-    local autoSaveToggle = tab:CreateToggle({
-        Text = "Enable Auto Save",
-        Default = window.Config.AutoSave,
-        ConfigId = "autosave_enabled"
-    })
-    
-    local autoSaveInterval = tab:CreateSlider({
-        Text = "Auto Save Interval (seconds)",
-        Min = 10,
-        Max = 300,
-        Default = window.Config.AutoSaveInterval,
-        ConfigId = "autosave_interval"
-    })
-    
-    -- Apply auto-save settings when toggled/changed
-    autoSaveToggle.OnChanged:Connect(function(enabled)
-        if enabled then
-            window:EnableAutoSave(autoSaveInterval.GetValue())
-            SetStatus("Auto-save enabled", "Success")
-        else
-            window:DisableAutoSave()
-            SetStatus("Auto-save disabled", "Warning")
-        end
-    end)
-    
-    autoSaveInterval.OnChanged:Connect(function(value)
-        if window.Config.AutoSave then
-            window:EnableAutoSave(value)
-        end
-    end)
-    
-    -- Section: Import/Export
-    tab:CreateSection("Import / Export")
-    
-    -- Export button with copy notification
-    tab:CreateButton({
-        Text = " Export Config",
-        Callback = function()
-            local exportString = window:ExportConfig()
-            if exportString then
-                -- Try to copy to clipboard
-                local ok = pcall(function()
-                    setclipboard(exportString)
-                end)
-                if ok then
-                    SetStatus("Exported & copied to clipboard!", "Success")
-                else
-                    SetStatus("Export generated (clipboard not available)", "Warning")
-                end
-            else
-                SetStatus("Export failed", "Error")
-            end
-        end
-    })
-    
-    -- Import input
-    local importInput = tab:CreateInput({
-        Text = "Import Config String",
-        Placeholder = "Paste base64 or JSON config here...",
-        ConfigId = "import_string"
-    })
-    
-    -- Import button
-    tab:CreateButton({
-        Text = " Import Config",
-        Callback = function()
-            local importString = importInput.GetValue()
-            if importString and importString ~= "" then
-                local success, err = window:ImportConfig(importString)
-                if success then
-                    SetStatus("Config imported!", "Success")
-                    importInput.SetValue("")
-                else
-                    SetStatus("Import failed: " .. (err or "Invalid data"), "Error")
-                end
-            else
-                SetStatus("No import data provided", "Warning")
-            end
-        end
-    })
-    
-    -- Section: Saved Configs
-    if IsFileIOAvailable() then
-        tab:CreateSection("Saved Configs")
-        
-        local configsDropdown = tab:CreateDropdown({
-            Text = "Select Config",
-            Options = window:ListConfigs(),
-            ConfigId = "selected_config"
-        })
-        
-        -- Refresh button
-        tab:CreateButton({
-            Text = " Refresh List",
-            Callback = function()
-                local configs = window:ListConfigs()
-                configsDropdown.SetValue(nil)  -- Clear selection
-                -- Note: In a full implementation, you'd update the dropdown options here
-                -- This requires additional element API that may need to be added
-                SetStatus("Config list refreshed", "Info")
-            end
-        })
-        
-        -- Load selected button
-        tab:CreateButton({
-            Text = " Load Selected Config",
-            Callback = function()
-                local selected = configsDropdown.GetValue()
-                if selected and selected ~= "Select..." then
-                    window.Config.ConfigName = selected
-                    configNameInput.SetValue(selected)
-                    local success = window:LoadConfig(selected)
-                    if success then
-                        SetStatus("Config '" .. selected .. "' loaded!", "Success")
-                    else
-                        SetStatus("Failed to load config", "Error")
-                    end
-                else
-                    SetStatus("No config selected", "Warning")
-                end
-            end
-        })
-        
-        -- Delete button
-        tab:CreateButton({
-            Text = " Delete Selected Config",
-            Callback = function()
-                local selected = configsDropdown.GetValue()
-                if selected and selected ~= "Select..." then
-                    local success = window:DeleteConfig(selected)
-                    if success then
-                        SetStatus("Config '" .. selected .. "' deleted!", "Warning")
-                        configsDropdown.SetValue(nil)
-                    else
-                        SetStatus("Failed to delete config", "Error")
-                    end
-                else
-                    SetStatus("No config selected", "Warning")
-                end
-            end
-        })
-    end
-    
-    return tab
-end
-
--- ─────────────────────────────────────────────
 --  Signal — lightweight pub/sub event system
 -- ─────────────────────────────────────────────
 
@@ -734,280 +373,22 @@ function Aurora:CreateWindow(config)
         ContentContainer = ContentContainer,
         Tabs             = {},
         ActiveTab        = nil,
+        _configElements  = {},
+        _title           = title,
         -- Events
         OnTabChanged     = Signal.new(),  -- fires (newTab, oldTab)
-        
-        -- Config system
-        Config = {
-            ConfigName = config.ConfigName or "default",
-            AutoSave = false,
-            AutoSaveInterval = 30,
-            _elements = {},
-            _elementCounters = {},
-            _autoSaveTask = nil,
-            _lastSaveTime = 0,
-        },
     }
 
-    -- Config system methods
-    function Window:CaptureState()
-        local data = {
-            _meta = {
-                auroraVersion = "6.5.0",
-                timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-                gameId = game.GameId,
-            },
-            window = {
-                position = { x = self.MainFrame.Position.X.Offset, y = self.MainFrame.Position.Y.Offset },
-                size = { width = self.MainFrame.Size.X.Offset, height = self.MainFrame.Size.Y.Offset },
-                activeTab = self.ActiveTab and table.find(self.Tabs, self.ActiveTab) or 1,
-            },
-            elements = {},
-        }
-        
-        for elementKey, elementData in pairs(self.Config._elements) do
-            local element = elementData.element
-            local elementType = elementData.type
-            
-            if element and element.GetValue then
-                local ok, value = pcall(element.GetValue)
-                if ok then
-                    data.elements[elementKey] = {
-                        type = elementType,
-                        value = Aurora.ConfigSystem:SerializeValue(value, elementType),
-                        tab = elementData.tabName,
-                    }
-                end
-            end
-        end
-        
-        return data
-    end
-
-    function Window:ApplyState(data)
-        if not data or not data.elements then return end
-        
-        for elementKey, elementData in pairs(data.elements) do
-            local tracked = self.Config._elements[elementKey]
-            if tracked and tracked.element and tracked.element.SetValue then
-                local deserialized = Aurora.ConfigSystem:DeserializeValue(elementData.value, elementData.type)
-                
-                -- Validate value before setting
-                local shouldApply = true
-                if elementData.type == "Dropdown" or elementData.type == "SearchDropdown" then
-                    -- Check if option still exists
-                    if tracked.options then
-                        shouldApply = table.find(tracked.options, deserialized) ~= nil
-                    end
-                elseif elementData.type == "MultiSelect" then
-                    -- Filter out options that no longer exist
-                    if tracked.options and type(deserialized) == "table" then
-                        local valid = {}
-                        for _, v in ipairs(deserialized) do
-                            if table.find(tracked.options, v) then
-                                table.insert(valid, v)
-                            end
-                        end
-                        deserialized = valid
-                    end
-                end
-                
-                if shouldApply then
-                    pcall(function()
-                        tracked.element.SetValue(deserialized)
-                    end)
-                end
-            end
-        end
-        
-        -- Restore window position/size
-        if data.window then
-            if data.window.position then
-                self.MainFrame.Position = UDim2.new(
-                    self.MainFrame.Position.X.Scale, data.window.position.x,
-                    self.MainFrame.Position.Y.Scale, data.window.position.y
-                )
-            end
-        end
-    end
-
     function Window:SaveConfig(name)
-        name = name or self.Config.ConfigName
-        if not IsFileIOAvailable() then
-            warn("[Aurora Config] File I/O not available - cannot save")
-            return false
-        end
-        
-        EnsureDirectory()
-        local path = GetStorageDirectory() .. name .. ".json"
-        local data = self:CaptureState()
-        
-        local ok, content = pcall(HttpService.JSONEncode, HttpService, data)
-        if not ok then
-            warn("[Aurora Config] Failed to encode: " .. tostring(content))
-            return false
-        end
-        
-        local ok2, err = pcall(writefile, path, content)
-        if not ok2 then
-            warn("[Aurora Config] Failed to write: " .. tostring(err))
-            return false
-        end
-        
-        self.Config._lastSaveTime = tick()
-        return true
+        return Aurora.ConfigManager:Save(name, self)
     end
 
     function Window:LoadConfig(name)
-        name = name or self.Config.ConfigName
-        if not IsFileIOAvailable() then
-            warn("[Aurora Config] File I/O not available - cannot load")
-            return false
+        local ok, err = Aurora.ConfigManager:Load(name, self)
+        if ok then
+            Aurora.ConfigManager:SetLastConfig(self._title, name)
         end
-        
-        local path = GetStorageDirectory() .. name .. ".json"
-        
-        if not isfile(path) then
-            return false
-        end
-        
-        local ok, content = pcall(readfile, path)
-        if not ok then
-            warn("[Aurora Config] Failed to read: " .. tostring(content))
-            return false
-        end
-        
-        local ok2, data = pcall(HttpService.JSONDecode, HttpService, content)
-        if not ok2 then
-            warn("[Aurora Config] Failed to decode: " .. tostring(data))
-            return false
-        end
-        
-        self:ApplyState(data)
-        return true
-    end
-
-    function Window:DeleteConfig(name)
-        name = name or self.Config.ConfigName
-        if not IsFileIOAvailable() then return false end
-        
-        local path = GetStorageDirectory() .. name .. ".json"
-        if isfile(path) then
-            return pcall(delfile, path)
-        end
-        return false
-    end
-
-    function Window:ListConfigs()
-        if not IsFileIOAvailable() then return {} end
-        
-        local dir = GetStorageDirectory()
-        local configs = {}
-        local files = listfiles and listfiles(dir) or {}
-        
-        for _, file in ipairs(files) do
-            if file:match("%.json$") then
-                local name = file:match("([^/\\]+)%.json$")
-                if name then
-                    table.insert(configs, name)
-                end
-            end
-        end
-        
-        return configs
-    end
-
-    function Window:ResetConfig()
-        for elementKey, elementData in pairs(self.Config._elements) do
-            local element = elementData.element
-            local defaultValue = elementData.defaultValue
-            
-            if element and element.SetValue and defaultValue ~= nil then
-                pcall(function()
-                    element.SetValue(defaultValue)
-                end)
-            end
-        end
-    end
-
-    function Window:ExportConfig()
-        local data = self:CaptureState()
-        return Aurora.ConfigSystem:ExportToString(data)
-    end
-
-    function Window:ImportConfig(str)
-        local data = Aurora.ConfigSystem:ImportFromString(str)
-        if not data then
-            return false, "Invalid import data"
-        end
-        
-        self:ApplyState(data)
-        return true
-    end
-
-    -- Debounced save helper
-    local debounceTimers = {}
-    local function DebouncedSave(window, delay)
-        delay = delay or 1
-        
-        local key = tostring(window)
-        if debounceTimers[key] then
-            task.cancel(debounceTimers[key])
-        end
-        
-        debounceTimers[key] = task.delay(delay, function()
-            debounceTimers[key] = nil
-            if window.Config.AutoSave then
-                window:SaveConfig(window.Config.ConfigName)
-            end
-        end)
-    end
-
-    function Window:EnableAutoSave(interval)
-        self.Config.AutoSave = true
-        self.Config.AutoSaveInterval = interval or 30
-        
-        -- Cancel any existing task
-        if self.Config._autoSaveTask then
-            pcall(task.cancel, self.Config._autoSaveTask)
-        end
-        
-        -- Start auto-save loop
-        self.Config._autoSaveTask = task.spawn(function()
-            while self.Config.AutoSave do
-                task.wait(self.Config.AutoSaveInterval)
-                if self.Config.AutoSave and tick() - self.Config._lastSaveTime >= self.Config.AutoSaveInterval then
-                    self:SaveConfig(self.Config.ConfigName)
-                end
-            end
-        end)
-        
-        -- Hook into OnChanged for debounced saves
-        for _, elementData in pairs(self.Config._elements) do
-            local element = elementData.element
-            if element and element.OnChanged then
-                element.OnChanged:Connect(function()
-                    if self.Config.AutoSave then
-                        DebouncedSave(self, 1)
-                    end
-                end)
-            end
-        end
-        
-        -- Save on window destroy
-        self.ScreenGui.AncestryChanged:Connect(function(_, parent)
-            if not parent then
-                self:SaveConfig(self.Config.ConfigName)
-            end
-        end)
-    end
-
-    function Window:DisableAutoSave()
-        self.Config.AutoSave = false
-        if self.Config._autoSaveTask then
-            pcall(task.cancel, self.Config._autoSaveTask)
-            self.Config._autoSaveTask = nil
-        end
+        return ok, err
     end
 
     function Window:SelectTab(index)
@@ -1162,8 +543,8 @@ function Aurora:CreateWindow(config)
         -- ownedConns: UIS connections that belong exclusively to this element.
         -- Added to windowConnections for Window:Destroy() cleanup, AND
         -- disconnected + pruned immediately when element.Destroy() is called.
-        -- elementType and configData are for config system integration
-        local function RegisterElement(element, frame, ownedConns, elementType, configData)
+        local function RegisterElement(element, frame, ownedConns, cfg)
+            cfg = cfg or {}
             ownedConns = ownedConns or {}
             for _, c in ipairs(ownedConns) do
                 table.insert(windowConnections, c)
@@ -1175,7 +556,19 @@ function Aurora:CreateWindow(config)
             table.insert(Tab.Elements, element)
             Tab.OnElementAdded:Fire(element)
 
+            -- Register for config tracking
+            if cfg.ConfigName and element.GetValue and element.SetValue then
+                if not Window._configElements[tabName] then
+                    Window._configElements[tabName] = {}
+                end
+                Window._configElements[tabName][cfg.ConfigName] = element
+            end
+
             element.Destroy = function()
+                -- Remove from config tracking
+                if cfg.ConfigName and Window._configElements[tabName] then
+                    Window._configElements[tabName][cfg.ConfigName] = nil
+                end
                 for _, c in ipairs(ownedConns) do
                     if c and c.Disconnect then c:Disconnect() end
                     for i, wc in ipairs(windowConnections) do
@@ -1238,24 +631,6 @@ function Aurora:CreateWindow(config)
                         AddCorner(overlay, UDim.new(0, 4))
                     end
                 end
-            end
-
-            -- Register with config system if element type provided
-            if elementType and element.GetValue then
-                local counterKey = tabName .. "_" .. elementType
-                Window.Config._elementCounters[counterKey] = (Window.Config._elementCounters[counterKey] or 0) + 1
-                local index = Window.Config._elementCounters[counterKey]
-                
-                local elementKey = configData and configData.ConfigId or 
-                    GenerateElementKey(tabName, configData and configData.Text, elementType, index)
-                
-                Window.Config._elements[elementKey] = {
-                    element = element,
-                    type = elementType,
-                    tabName = tabName,
-                    defaultValue = element.GetValue(),
-                    options = configData and configData.Options or nil,
-                }
             end
 
             return element
@@ -1363,7 +738,7 @@ function Aurora:CreateWindow(config)
                         Refresh(false)
                     end
                 end,
-            }, frame, nil, "Toggle", cfg)
+            }, frame, nil, cfg)
         end
 
         -- ── Slider ────────────────────────────
@@ -1474,7 +849,7 @@ function Aurora:CreateWindow(config)
                     Knob.Position   = UDim2.new(f, -6, 0.5, -6)
                     ValueLabel.Text = tostring(val)
                 end,
-            }, frame, { c3, c4 }, "Slider", cfg)
+            }, frame, { c3, c4 }, cfg)
         end
 
         function Tab:CreateDropdown(cfg)
@@ -1586,7 +961,7 @@ function Aurora:CreateWindow(config)
                         Label.Text = (cfg.Text or "Dropdown") .. ": " .. val
                     end
                 end,
-            }, DropdownFrame, nil, "Dropdown", cfg)
+            }, DropdownFrame, nil, cfg)
         end
 
         -- ── SearchDropdown ────────────────────
@@ -1761,7 +1136,7 @@ function Aurora:CreateWindow(config)
                         HeaderLabel.Text = labelText .. ": " .. val
                     end
                 end,
-            }, DropFrame, nil, "SearchDropdown", cfg)
+            }, DropFrame, nil, cfg)
         end
 
         function Tab:CreateMultiSelect(cfg)
@@ -1951,7 +1326,7 @@ function Aurora:CreateWindow(config)
                     end
                 end,
                 IsSelected = function(opt) return selected[opt] == true end,
-            }, MultiFrame, nil, "MultiSelect", cfg)
+            }, MultiFrame, nil, cfg)
         end
 
         function Tab:CreateInput(cfg)
@@ -2005,7 +1380,7 @@ function Aurora:CreateWindow(config)
                 OnChanged = OnChanged,
                 GetValue  = function() return InputBox.Text end,
                 SetValue  = function(val) InputBox.Text = val end,
-            }, frame, nil, "Input", cfg)
+            }, frame, nil, cfg)
         end
 
         -- ── NumberInput ───────────────────────
@@ -2108,7 +1483,7 @@ function Aurora:CreateWindow(config)
                 OnChanged = OnChanged,
                 GetValue  = function() return current end,
                 SetValue  = function(val) Commit(val) end,
-            }, frame, nil, "NumberInput", cfg)
+            }, frame, nil, cfg)
         end
 
         function Tab:CreateKeybind(cfg)
@@ -2191,7 +1566,7 @@ function Aurora:CreateWindow(config)
                     current   = key
                     KeyBtn.Text = key == Enum.KeyCode.Unknown and "None" or key.Name
                 end,
-            }, frame, { cancelCon }, "Keybind", cfg)
+            }, frame, { cancelCon }, cfg)
         end
 
         function Tab:CreateColorPicker(cfg)
@@ -2481,7 +1856,7 @@ function Aurora:CreateWindow(config)
                     h, s, v = Color3.toHSV(c)
                     Commit()
                 end,
-            }, PickerFrame, { svMove, svEnd, hueMove, hueEnd }, "ColorPicker", cfg)
+            }, PickerFrame, { svMove, svEnd, hueMove, hueEnd }, cfg)
         end
 
         -- ── Label ─────────────────────────────
@@ -2939,6 +2314,205 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement(element, TableFrame)
         end
+
+        -- ── Config Manager UI ─────────────────
+
+        function Tab:CreateConfigManager(cfg)
+            cfg = cfg or {}
+            local managerFrame = Create("Frame", {
+                Parent           = TabContent,
+                Size             = UDim2.new(1, 0, 0, 180),
+                BackgroundColor3 = Aurora.Config.Theme.Background,
+                BorderSizePixel  = 0,
+            })
+            AddCorner(managerFrame, UDim.new(0, 4))
+
+            -- Title
+            Create("TextLabel", {
+                Parent             = managerFrame,
+                Position           = UDim2.new(0, 12, 0, 8),
+                Size               = UDim2.new(1, -24, 0, 18),
+                BackgroundTransparency = 1,
+                Text               = cfg.Text or "Configuration Manager",
+                TextColor3         = Aurora.Config.Theme.Text,
+                Font               = Aurora.Config.FontBold,
+                TextSize           = 14,
+                TextXAlignment     = Enum.TextXAlignment.Left,
+            })
+
+            -- Config name input
+            local NameInput = Create("TextBox", {
+                Parent             = managerFrame,
+                Position           = UDim2.new(0, 12, 0, 32),
+                Size               = UDim2.new(1, -24, 0, 28),
+                BackgroundColor3   = Aurora.Config.Theme.Surface,
+                BorderSizePixel    = 0,
+                Text               = "",
+                PlaceholderText    = "Config name...",
+                PlaceholderColor3  = Aurora.Config.Theme.TextMuted,
+                TextColor3         = Aurora.Config.Theme.Text,
+                Font               = Aurora.Config.Font,
+                TextSize           = 13,
+                ClearTextOnFocus   = false,
+            })
+            AddCorner(NameInput, UDim.new(0, 4))
+            Create("UIPadding", {Parent = NameInput, PaddingLeft = UDim.new(0, 8)})
+
+            -- Buttons row 1: Save, Load, Delete
+            local function MakeBtn(text, xPos, color)
+                local btn = Create("TextButton", {
+                    Parent           = managerFrame,
+                    Position         = UDim2.new(0, 12 + xPos, 0, 68),
+                    Size             = UDim2.new(0, 80, 0, 28),
+                    BackgroundColor3 = color or Aurora.Config.Theme.Primary,
+                    Text             = text,
+                    TextColor3       = Aurora.Config.Theme.Text,
+                    Font             = Aurora.Config.FontMedium,
+                    TextSize         = 12,
+                    AutoButtonColor  = false,
+                    BorderSizePixel  = 0,
+                })
+                AddCorner(btn, UDim.new(0, 4))
+                btn.MouseEnter:Connect(function()
+                    Tween(btn, {BackgroundColor3 = Color3.fromRGB(45, 45, 60)}, 0.15)
+                end)
+                btn.MouseLeave:Connect(function()
+                    Tween(btn, {BackgroundColor3 = color or Aurora.Config.Theme.Primary}, 0.15)
+                end)
+                return btn
+            end
+
+            local SaveBtn   = MakeBtn("Save", 0, Aurora.Config.Theme.Success)
+            local LoadBtn   = MakeBtn("Load", 88)
+            local DeleteBtn = MakeBtn("Delete", 176, Aurora.Config.Theme.Error)
+            local ListBtn   = MakeBtn("Refresh", 264, Aurora.Config.Theme.Warning)
+
+            -- Status label
+            local StatusLabel = Create("TextLabel", {
+                Parent             = managerFrame,
+                Position           = UDim2.new(0, 12, 0, 104),
+                Size               = UDim2.new(1, -24, 0, 16),
+                BackgroundTransparency = 1,
+                Text               = "Ready",
+                TextColor3         = Aurora.Config.Theme.TextMuted,
+                Font               = Aurora.Config.Font,
+                TextSize           = 11,
+                TextXAlignment     = Enum.TextXAlignment.Left,
+            })
+
+            -- Config list (scrolling frame showing available configs)
+            local ListFrame = Create("ScrollingFrame", {
+                Parent               = managerFrame,
+                Position             = UDim2.new(0, 12, 0, 124),
+                Size                 = UDim2.new(1, -24, 0, 50),
+                BackgroundColor3     = Aurora.Config.Theme.Surface,
+                BorderSizePixel      = 0,
+                ScrollBarThickness   = 2,
+                ScrollBarImageColor3 = Aurora.Config.Theme.Border,
+                AutomaticCanvasSize  = Enum.AutomaticSize.Y,
+                CanvasSize           = UDim2.new(0, 0, 0, 0),
+            })
+            AddCorner(ListFrame, UDim.new(0, 4))
+            Create("UIListLayout", {Parent = ListFrame, Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder})
+            Create("UIPadding", {Parent = ListFrame, PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6), PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4)})
+
+            local function UpdateStatus(msg, isError)
+                StatusLabel.Text = msg
+                StatusLabel.TextColor3 = isError and Aurora.Config.Theme.Error or Aurora.Config.Theme.Success
+                task.delay(3, function()
+                    StatusLabel.Text = "Ready"
+                    StatusLabel.TextColor3 = Aurora.Config.Theme.TextMuted
+                end)
+            end
+
+            local function RefreshList()
+                for _, child in ipairs(ListFrame:GetChildren()) do
+                    if child:IsA("TextButton") then child:Destroy() end
+                end
+                local configs = Aurora.ConfigManager:List(Window._title)
+                for _, name in ipairs(configs) do
+                    local btn = Create("TextButton", {
+                        Parent           = ListFrame,
+                        Size             = UDim2.new(1, 0, 0, 20),
+                        BackgroundTransparency = 1,
+                        Text             = name,
+                        TextColor3       = Aurora.Config.Theme.TextMuted,
+                        Font             = Aurora.Config.Font,
+                        TextSize         = 11,
+                        TextXAlignment   = Enum.TextXAlignment.Left,
+                        AutoButtonColor  = false,
+                    })
+                    btn.MouseEnter:Connect(function()
+                        Tween(btn, {TextColor3 = Aurora.Config.Theme.Text}, 0.15)
+                    end)
+                    btn.MouseLeave:Connect(function()
+                        Tween(btn, {TextColor3 = Aurora.Config.Theme.TextMuted}, 0.15)
+                    end)
+                    btn.MouseButton1Click:Connect(function()
+                        NameInput.Text = name
+                    end)
+                end
+            end
+
+            SaveBtn.MouseButton1Click:Connect(function()
+                local name = NameInput.Text:gsub("^%s*(.-)%s*$", "%1") -- trim
+                if name == "" then UpdateStatus("Enter a config name", true) return end
+                local ok, err = Window:SaveConfig(name)
+                if ok then
+                    UpdateStatus("Saved: " .. name)
+                    RefreshList()
+                else
+                    UpdateStatus("Save failed: " .. (err or "unknown"), true)
+                end
+            end)
+
+            LoadBtn.MouseButton1Click:Connect(function()
+                local name = NameInput.Text:gsub("^%s*(.-)%s*$", "%1")
+                if name == "" then UpdateStatus("Enter a config name", true) return end
+                local ok, err = Window:LoadConfig(name)
+                if ok then
+                    UpdateStatus("Loaded: " .. name)
+                else
+                    UpdateStatus("Load failed: " .. (err or "unknown"), true)
+                end
+            end)
+
+            DeleteBtn.MouseButton1Click:Connect(function()
+                local name = NameInput.Text:gsub("^%s*(.-)%s*$", "%1")
+                if name == "" then UpdateStatus("Enter a config name", true) return end
+                local ok = Aurora.ConfigManager:Delete(name, Window._title)
+                if ok then
+                    UpdateStatus("Deleted: " .. name)
+                    NameInput.Text = ""
+                    RefreshList()
+                else
+                    UpdateStatus("Delete failed", true)
+                end
+            end)
+
+            ListBtn.MouseButton1Click:Connect(function()
+                RefreshList()
+                UpdateStatus("Config list refreshed")
+            end)
+
+            -- Initial refresh
+            RefreshList()
+
+            -- Auto-load last config if requested
+            if cfg.AutoLoad then
+                local lastConfig = Aurora.ConfigManager:GetLastConfig(Window._title)
+                if lastConfig then
+                    NameInput.Text = lastConfig
+                    Window:LoadConfig(lastConfig)
+                end
+            end
+
+            return RegisterElement({
+                Frame       = managerFrame,
+                RefreshList = RefreshList,
+            }, managerFrame)
+        end
+
         if #Window.Tabs == 0 then
             TabButton.BackgroundColor3 = Aurora.Config.Theme.Primary
             TabLabel.TextColor3        = Aurora.Config.Theme.Text
@@ -3063,6 +2637,269 @@ function Aurora:SetTheme(newTheme)
             Aurora.Config.Theme[k] = v
         end
     end
+end
+
+-- ─────────────────────────────────────────────
+--  Config Manager
+-- ─────────────────────────────────────────────
+
+Aurora.ConfigManager = {
+    _folder = "AuroraConfigs",
+    _ext = ".json",
+}
+
+-- Sanitize filename for filesystem safety
+local function SanitizeFilename(name)
+    return name:gsub("[\\/:%*%?\"<>|]", "_")
+end
+
+-- Get full path for a config
+function Aurora.ConfigManager:_getPath(name, windowTitle)
+    local folder = self._folder .. "/" .. SanitizeFilename(windowTitle or "Default")
+    return folder .. "/" .. SanitizeFilename(name) .. self._ext
+end
+
+-- Ensure folder exists
+function Aurora.ConfigManager:_ensureFolder(windowTitle)
+    local folder = self._folder .. "/" .. SanitizeFilename(windowTitle or "Default")
+    if not isfolder(folder) then
+        makefolder(folder)
+    end
+    return folder
+end
+
+-- Serialize Color3 to hex
+local function Color3ToHex(c)
+    return string.format("#%02X%02X%02X", math.round(c.R * 255), math.round(c.G * 255), math.round(c.B * 255))
+end
+
+-- Deserialize hex to Color3
+local function HexToColor3(hex)
+    local h = hex:gsub("#", "")
+    return Color3.fromRGB(tonumber(h:sub(1,2), 16) or 255, tonumber(h:sub(3,4), 16) or 255, tonumber(h:sub(5,6), 16) or 255)
+end
+
+-- Serialize KeyCode to string
+local function KeyCodeToString(kc)
+    return kc.Name
+end
+
+-- Deserialize string to KeyCode
+local function StringToKeyCode(s)
+    return Enum.KeyCode[s] or Enum.KeyCode.Unknown
+end
+
+-- Serialize value based on type
+local function SerializeValue(val)
+    if typeof(val) == "Color3" then
+        return { __type = "Color3", value = Color3ToHex(val) }
+    elseif typeof(val) == "EnumItem" then
+        return { __type = "Enum", enum = tostring(val.EnumType), value = val.Name }
+    else
+        return val
+    end
+end
+
+-- Deserialize value
+local function DeserializeValue(val)
+    if type(val) == "table" and val.__type then
+        if val.__type == "Color3" then
+            return HexToColor3(val.value)
+        elseif val.__type == "Enum" then
+            -- Handle KeyCode specifically
+            if val.enum == "KeyCode" then
+                return StringToKeyCode(val.value)
+            end
+        end
+    end
+    return val
+end
+
+-- Save current window state to config
+function Aurora.ConfigManager:Save(name, window, metadata)
+    if not name or name == "" then return false, "Invalid config name" end
+    
+    local folder = self:_ensureFolder(window._title)
+    local path = self:_getPath(name, window._title)
+    
+    local values = {}
+    
+    -- Iterate through all tracked elements
+    for tabName, elements in pairs(window._configElements or {}) do
+        values[tabName] = {}
+        for elementName, element in pairs(elements) do
+            if element and element.GetValue then
+                local ok, val = pcall(element.GetValue)
+                if ok then
+                    values[tabName][elementName] = SerializeValue(val)
+                end
+            end
+        end
+    end
+    
+    local data = {
+        version = "6.5.0",
+        created = os.time(),
+        modified = os.time(),
+        metadata = metadata or {},
+        values = values,
+    }
+    
+    local ok, encoded = pcall(function()
+        return game:GetService("HttpService"):JSONEncode(data)
+    end)
+    
+    if not ok then
+        return false, "Failed to encode: " .. tostring(encoded)
+    end
+    
+    writefile(path, encoded)
+    return true, nil
+end
+
+-- Load config and apply to window
+function Aurora.ConfigManager:Load(name, window)
+    if not name or name == "" then return false, "Invalid config name" end
+    
+    local path = self:_getPath(name, window._title)
+    if not isfile(path) then
+        return false, "Config not found"
+    end
+    
+    local ok, data = pcall(function()
+        local content = readfile(path)
+        return game:GetService("HttpService"):JSONDecode(content)
+    end)
+    
+    if not ok then
+        return false, "Failed to decode: " .. tostring(data)
+    end
+    
+    -- Apply values
+    for tabName, elements in pairs(data.values or {}) do
+        local tabElements = window._configElements and window._configElements[tabName]
+        if tabElements then
+            for elementName, savedVal in pairs(elements) do
+                local element = tabElements[elementName]
+                if element and element.SetValue then
+                    local val = DeserializeValue(savedVal)
+                    pcall(function() element.SetValue(val) end)
+                end
+            end
+        end
+    end
+    
+    return true, data
+end
+
+-- Delete a config
+function Aurora.ConfigManager:Delete(name, windowTitle)
+    local path = self:_getPath(name, windowTitle)
+    if isfile(path) then
+        delfile(path)
+        return true
+    end
+    return false
+end
+
+-- List all configs for a window
+function Aurora.ConfigManager:List(windowTitle)
+    local folder = self._folder .. "/" .. SanitizeFilename(windowTitle or "Default")
+    if not isfolder(folder) then
+        return {}
+    end
+    
+    local configs = {}
+    for _, file in ipairs(listfiles(folder)) do
+        if file:sub(-5) == ".json" then
+            local name = file:match("([^/\\]+)%.json$")
+            if name then
+                table.insert(configs, name)
+            end
+        end
+    end
+    
+    table.sort(configs)
+    return configs
+end
+
+-- Export config as JSON string
+function Aurora.ConfigManager:Export(name, windowTitle)
+    local path = self:_getPath(name, windowTitle)
+    if not isfile(path) then
+        return nil
+    end
+    return readfile(path)
+end
+
+-- Import config from JSON string
+function Aurora.ConfigManager:Import(name, dataStr, windowTitle)
+    if not name or name == "" then return false, "Invalid config name" end
+    
+    local ok, data = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(dataStr)
+    end)
+    
+    if not ok then
+        return false, "Invalid JSON: " .. tostring(data)
+    end
+    
+    -- Validate structure
+    if type(data.values) ~= "table" then
+        return false, "Invalid config structure"
+    end
+    
+    local folder = self:_ensureFolder(windowTitle)
+    local path = self:_getPath(name, windowTitle)
+    
+    data.modified = os.time()
+    if not data.created then data.created = os.time() end
+    
+    local ok2, encoded = pcall(function()
+        return game:GetService("HttpService"):JSONEncode(data)
+    end)
+    
+    if not ok2 then
+        return false, "Failed to encode: " .. tostring(encoded)
+    end
+    
+    writefile(path, encoded)
+    return true, nil
+end
+
+-- Enable auto-save at interval (seconds)
+function Aurora.ConfigManager:EnableAutoSave(interval, window, configName)
+    if self._autoSaveConn then
+        self._autoSaveConn:Disconnect()
+        self._autoSaveConn = nil
+    end
+    
+    if not interval or interval <= 0 then return end
+    
+    self._autoSaveConn = task.spawn(function()
+        while true do
+            task.wait(interval)
+            if window and window._configElements and configName then
+                self:Save(configName, window)
+            end
+        end
+    end)
+end
+
+-- Get last loaded/saved config
+function Aurora.ConfigManager:GetLastConfig(windowTitle)
+    local path = self:_getPath("__last", windowTitle)
+    if isfile(path) then
+        return readfile(path)
+    end
+    return nil
+end
+
+-- Set last loaded/saved config
+function Aurora.ConfigManager:SetLastConfig(windowTitle, configName)
+    local folder = self:_ensureFolder(windowTitle)
+    local path = self:_getPath("__last", windowTitle)
+    writefile(path, configName)
 end
 
 return Aurora
