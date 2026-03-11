@@ -5,6 +5,7 @@
 local Aurora = {}
 local TweenService     = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
+local HttpService      = game:GetService("HttpService")
 local Players          = game:GetService("Players")
 local LocalPlayer      = Players.LocalPlayer
 
@@ -124,6 +125,367 @@ local function AddShadow(parent, intensity)
         SliceCenter           = Rect.new(49, 49, 450, 450),
         ZIndex                = parent.ZIndex - 1,
     })
+end
+
+-- ─────────────────────────────────────────────
+--  ConfigService (filesystem-backed)
+-- ─────────────────────────────────────────────
+
+local function _hasFn(name)
+    local v = rawget(getfenv and getfenv(0) or _G, name)
+    return type(v) == "function"
+end
+
+local FS = {
+    ok         = _hasFn("writefile") and _hasFn("readfile") and _hasFn("isfile"),
+    writefile  = _hasFn("writefile")  and writefile  or nil,
+    readfile   = _hasFn("readfile")   and readfile   or nil,
+    isfile     = _hasFn("isfile")     and isfile     or nil,
+    makefolder = _hasFn("makefolder") and makefolder or nil,
+    listfiles  = _hasFn("listfiles")  and listfiles  or nil,
+    delfile    = _hasFn("delfile")    and delfile    or nil,
+}
+
+local function _safeCall(fn, ...)
+    if not fn then return false end
+    local ok, res = pcall(fn, ...)
+    if not ok then return false end
+    return true, res
+end
+
+local function _pathJoin(a, b)
+    if a:sub(-1) == "/" then return a .. b end
+    return a .. "/" .. b
+end
+
+local function _sanitizeName(name)
+    name = tostring(name or "")
+    name = name:gsub("[\\/:*?\"<>|]", "_")
+    name = name:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then name = "default" end
+    return name
+end
+
+local function _colorToHex(c)
+    return string.format("#%02X%02X%02X", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
+end
+
+local function _hexToColor(hex)
+    if type(hex) ~= "string" then return nil end
+    hex = hex:gsub("#", "")
+    if #hex ~= 6 then return nil end
+    local r = tonumber(hex:sub(1, 2), 16)
+    local g = tonumber(hex:sub(3, 4), 16)
+    local b = tonumber(hex:sub(5, 6), 16)
+    if not (r and g and b) then return nil end
+    return Color3.fromRGB(r, g, b)
+end
+
+local function _encodeValue(v)
+    local t = typeof(v)
+    if t == "boolean" or t == "number" or t == "string" then
+        return v
+    end
+    if t == "Color3" then
+        return _colorToHex(v)
+    end
+    if t == "EnumItem" then
+        -- primarily for Enum.KeyCode
+        return tostring(v) -- "Enum.KeyCode.RightShift"
+    end
+    if t == "table" then
+        -- MultiSelect returns array of strings; keep arrays as-is if JSON encodable
+        return v
+    end
+    return nil
+end
+
+local function _decodeValue(raw, hint)
+    -- hint is optional; used when we can infer element value type
+    if hint == "Color3" then
+        return _hexToColor(raw)
+    end
+    if hint == "Enum.KeyCode" then
+        if type(raw) == "string" then
+            local name = raw:gsub("^Enum%.KeyCode%.", "")
+            local item = Enum.KeyCode[name]
+            if item then return item end
+        end
+        return nil
+    end
+    return raw
+end
+
+function Aurora:CreateConfig(cfg)
+    cfg = cfg or {}
+    local appName = tostring(cfg.AppName or cfg.Name or "AuroraApp")
+    local folder  = tostring(cfg.Folder or "Aurora/Configs")
+    local defaultConfigName = tostring(cfg.Default or "default")
+    local autosave = cfg.AutoSave == true
+    local debounce = tonumber(cfg.Debounce or 1) or 1
+
+    local appFolder = _pathJoin(folder, _sanitizeName(appName))
+
+    local bound = {}        -- key -> { element=..., hint=..., conn=... }
+    local autosaveName = defaultConfigName
+    local pendingSave = false
+    local lastDirtyAt = 0
+
+    local function ensureFolders()
+        if not FS.ok then return false end
+        if FS.makefolder then
+            _safeCall(FS.makefolder, folder)
+            _safeCall(FS.makefolder, appFolder)
+        end
+        return true
+    end
+
+    local function configPath(name)
+        return _pathJoin(appFolder, _sanitizeName(name) .. ".json")
+    end
+
+    local function snapshotValues()
+        local values = {}
+        for key, info in pairs(bound) do
+            local el = info.element
+            if el and el.GetValue then
+                local ok, v = pcall(el.GetValue)
+                if ok then
+                    local enc = _encodeValue(v)
+                    if enc ~= nil then
+                        values[key] = enc
+                    end
+                end
+            end
+        end
+        return values
+    end
+
+    local function writeConfig(name)
+        if not FS.ok then return false, "filesystem_unavailable" end
+        ensureFolders()
+        local payload = {
+            schema    = 1,
+            app       = appName,
+            aurora    = "6.5.0",
+            createdAt = os.time(),
+            values    = snapshotValues(),
+        }
+        local ok, json = pcall(HttpService.JSONEncode, HttpService, payload)
+        if not ok then return false, "json_encode_failed" end
+        local path = configPath(name)
+        local ok2 = _safeCall(FS.writefile, path, json)
+        if not ok2 then return false, "write_failed" end
+        return true
+    end
+
+    local function readConfig(name)
+        if not FS.ok then return false, "filesystem_unavailable" end
+        local path = configPath(name)
+        local okIs, exists = _safeCall(FS.isfile, path)
+        if not okIs or not exists then return false, "missing" end
+        local okRead, contents = _safeCall(FS.readfile, path)
+        if not okRead then return false, "read_failed" end
+        local okJson, decoded = pcall(HttpService.JSONDecode, HttpService, contents)
+        if not okJson or type(decoded) ~= "table" then return false, "json_decode_failed" end
+        if decoded.schema ~= 1 or type(decoded.values) ~= "table" then return false, "schema_mismatch" end
+        return true, decoded
+    end
+
+    local function applyValues(values, opts)
+        opts = opts or {}
+        local silent = opts.Silent == true
+        for key, raw in pairs(values or {}) do
+            local info = bound[key]
+            if info and info.element and info.element.SetValue then
+                local hint = info.hint
+                local val = _decodeValue(raw, hint)
+                if val ~= nil then
+                    pcall(info.element.SetValue, val, silent)
+                end
+            end
+        end
+    end
+
+    local function markDirty()
+        lastDirtyAt = tick()
+        if pendingSave then return end
+        pendingSave = true
+        task.spawn(function()
+            while pendingSave do
+                task.wait(0.05)
+                if tick() - lastDirtyAt >= debounce then
+                    pendingSave = false
+                    if autosave then
+                        writeConfig(autosaveName)
+                    end
+                end
+            end
+        end)
+    end
+
+    local Config = {}
+
+    function Config.Bind(element, key, opts)
+        key = tostring(key)
+        if key == "" then return false, "bad_key" end
+        if not element or type(element) ~= "table" or type(element.GetValue) ~= "function" or type(element.SetValue) ~= "function" then
+            return false, "bad_element"
+        end
+
+        -- Cleanup previous
+        if bound[key] and bound[key].conn and bound[key].conn.Disconnect then
+            bound[key].conn:Disconnect()
+        end
+
+        local hint = opts and opts.Hint
+        if not hint then
+            local ok, v = pcall(element.GetValue)
+            if ok then
+                local vt = typeof(v)
+                if vt == "Color3" then hint = "Color3"
+                elseif vt == "EnumItem" then hint = "Enum.KeyCode" end
+            end
+        end
+
+        local conn
+        if element.OnChanged and element.OnChanged.Connect then
+            conn = element.OnChanged:Connect(function()
+                markDirty()
+            end)
+        end
+
+        bound[key] = { element = element, hint = hint, conn = conn }
+        element._configKey = key
+        return true
+    end
+
+    function Config.Unbind(key)
+        key = tostring(key)
+        local info = bound[key]
+        if not info then return false end
+        if info.conn and info.conn.Disconnect then info.conn:Disconnect() end
+        if info.element then info.element._configKey = nil end
+        bound[key] = nil
+        return true
+    end
+
+    function Config.UnbindAll()
+        for k in pairs(bound) do
+            Config.Unbind(k)
+        end
+    end
+
+    function Config.SetAutoSave(on, name)
+        autosave = on == true
+        if name then autosaveName = tostring(name) end
+    end
+
+    function Config.Save(name)
+        return writeConfig(name or defaultConfigName)
+    end
+
+    function Config.Load(name, opts)
+        local ok, dataOrErr = readConfig(name or defaultConfigName)
+        if not ok then return false, dataOrErr end
+        applyValues(dataOrErr.values, opts)
+        return true
+    end
+
+    function Config.Delete(name)
+        if not (FS.ok and FS.delfile) then return false end
+        local path = configPath(name or defaultConfigName)
+        local ok = _safeCall(FS.delfile, path)
+        return ok == true
+    end
+
+    function Config.List()
+        if not (FS.ok and FS.listfiles) then return {} end
+        ensureFolders()
+        local ok, files = _safeCall(FS.listfiles, appFolder)
+        if not ok or type(files) ~= "table" then return {} end
+        local out = {}
+        for _, p in ipairs(files) do
+            local n = tostring(p):match("([^/\\]+)%.json$")
+            if n then out[#out + 1] = n end
+        end
+        table.sort(out)
+        return out
+    end
+
+    function Config.Export(name)
+        local ok, dataOrErr = readConfig(name or defaultConfigName)
+        if ok then
+            local ok2, json = pcall(HttpService.JSONEncode, HttpService, dataOrErr)
+            if ok2 then return json end
+            return nil
+        end
+        -- If it doesn't exist yet, export a fresh snapshot
+        local payload = {
+            schema    = 1,
+            app       = appName,
+            aurora    = "6.5.0",
+            createdAt = os.time(),
+            values    = snapshotValues(),
+        }
+        local ok3, json2 = pcall(HttpService.JSONEncode, HttpService, payload)
+        if ok3 then return json2 end
+        return nil
+    end
+
+    function Config.ExportToClipboard(name)
+        local payload = Config.Export(name)
+        if not payload then return false end
+        if type(setclipboard) == "function" then
+            local ok = pcall(setclipboard, payload)
+            return ok == true
+        end
+        return false
+    end
+
+    function Config.ImportFromClipboard(name, opts)
+        if type(getclipboard) ~= "function" then return false, "clipboard_unavailable" end
+        local ok, data = pcall(getclipboard)
+        if not ok then return false, "clipboard_failed" end
+        return Config.Import(data, name, opts)
+    end
+
+    function Config.Import(exportString, name, opts)
+        if type(exportString) ~= "string" then return false, "bad_payload" end
+        if #exportString > 512 * 1024 then return false, "too_large" end
+        local okJson, decoded = pcall(HttpService.JSONDecode, HttpService, exportString)
+        if not okJson or type(decoded) ~= "table" or decoded.schema ~= 1 or type(decoded.values) ~= "table" then
+            return false, "invalid" 
+        end
+        if not FS.ok then return false, "filesystem_unavailable" end
+        ensureFolders()
+        local outName = name or defaultConfigName
+        local ok2, json = pcall(HttpService.JSONEncode, HttpService, decoded)
+        if not ok2 then return false, "json_encode_failed" end
+        local ok3 = _safeCall(FS.writefile, configPath(outName), json)
+        if not ok3 then return false, "write_failed" end
+        if opts and opts.Load == true then
+            applyValues(decoded.values, opts)
+        end
+        return true
+    end
+
+    function Config.GetBoundKeys()
+        local t = {}
+        for k in pairs(bound) do t[#t + 1] = k end
+        table.sort(t)
+        return t
+    end
+
+    function Config._ApplyValues(values, opts)
+        applyValues(values, opts)
+    end
+
+    if autosave then
+        ensureFolders()
+    end
+
+    return Config
 end
 
 local function MakeDraggable(frame, handle)
@@ -375,7 +737,24 @@ function Aurora:CreateWindow(config)
         ActiveTab        = nil,
         -- Events
         OnTabChanged     = Signal.new(),  -- fires (newTab, oldTab)
+        -- Optional config manager (Aurora:CreateConfig)
+        Config           = nil,
     }
+
+    -- Optional config integration
+    if type(config.Config) == "table" and type(Aurora.CreateConfig) == "function" then
+        local c = config.Config
+        local ok, cfgMgr = pcall(Aurora.CreateConfig, Aurora, {
+            AppName   = c.AppName or title,
+            Folder    = c.Folder,
+            Default   = c.Default,
+            AutoSave  = c.AutoSave,
+            Debounce  = c.Debounce,
+        })
+        if ok and cfgMgr then
+            Window.Config = cfgMgr
+        end
+    end
 
     function Window:SelectTab(index)
         local tab = self.Tabs[index]
@@ -387,224 +766,6 @@ function Aurora:CreateWindow(config)
             if c and c.Disconnect then c:Disconnect() end
         end
         ScreenGui:Destroy()
-    end
-
-    function Window:CreateConfigTab()
-        local ConfigTab = self:CreateTab({ Name = "Config", Icon = "⚙️" })
-        
-        -- Profile Management Section
-        ConfigTab:CreateSection("Profile Management")
-        
-        local profileDropdown = ConfigTab:CreateDropdown({
-            Text = "Current Profile",
-            Options = Aurora.Config:listProfiles(),
-            Default = Aurora.Config.currentProfile,
-            Configurable = false  -- Don't save the profile selector itself
-        })
-        
-        local saveProfileBtn = ConfigTab:CreateButton({
-            Text = "Save Current Profile",
-            Callback = function()
-                Aurora.Config:forceSave()
-                Aurora:Notify({
-                    Title = "Config Saved",
-                    Message = "Profile '" .. Aurora.Config.currentProfile .. "' saved successfully",
-                    Type = "Success",
-                    Duration = 2
-                })
-            end
-        })
-        
-        local newProfileInput = ConfigTab:CreateInput({
-            Text = "New Profile Name",
-            Placeholder = "Enter profile name...",
-            Configurable = false
-        })
-        
-        local createProfileBtn = ConfigTab:CreateButton({
-            Text = "Create New Profile",
-            Callback = function()
-                local profileName = newProfileInput.GetValue()
-                if profileName == "" then
-                    Aurora:Notify({
-                        Title = "Error",
-                        Message = "Please enter a profile name",
-                        Type = "Error",
-                        Duration = 3
-                    })
-                    return
-                end
-                
-                if Aurora.Config:createProfile(profileName, Aurora.Config.currentProfile) then
-                    -- Update dropdown options
-                    profileDropdown.SetValue(profileName)
-                    profileDropdown.SetValue = function(val)
-                        -- Update dropdown options
-                        local profiles = Aurora.Config:listProfiles()
-                        -- This would require extending the dropdown to update options
-                        -- For now, we'll just load the profile
-                    end
-                    
-                    Aurora:Notify({
-                        Title = "Profile Created",
-                        Message = "Profile '" .. profileName .. "' created successfully",
-                        Type = "Success",
-                        Duration = 2
-                    })
-                    newProfileInput.SetValue("")
-                else
-                    Aurora:Notify({
-                        Title = "Error",
-                        Message = "Profile '" .. profileName .. "' already exists",
-                        Type = "Error",
-                        Duration = 3
-                    })
-                end
-            end
-        })
-        
-        local deleteProfileBtn = ConfigTab:CreateButton({
-            Text = "Delete Current Profile",
-            Callback = function()
-                if Aurora.Config.currentProfile == "Default" then
-                    Aurora:Notify({
-                        Title = "Error",
-                        Message = "Cannot delete the 'Default' profile",
-                        Type = "Error",
-                        Duration = 3
-                    })
-                    return
-                end
-                
-                if Aurora.Config:deleteProfile(Aurora.Config.currentProfile) then
-                    Aurora:Notify({
-                        Title = "Profile Deleted",
-                        Message = "Profile '" .. Aurora.Config.currentProfile .. "' deleted",
-                        Type = "Warning",
-                        Duration = 2
-                    })
-                end
-            end
-        })
-        
-        -- Import/Export Section
-        ConfigTab:CreateSection("Import/Export")
-        
-        local exportBtn = ConfigTab:CreateButton({
-            Text = "Export Current Profile",
-            Callback = function()
-                local configJson = Aurora.Config:exportProfile()
-                if configJson then
-                    -- In a real implementation, this would copy to clipboard
-                    -- For now, we'll just show a notification
-                    Aurora:Notify({
-                        Title = "Config Exported",
-                        Message = "Configuration copied to clipboard (length: " .. #configJson .. " chars)",
-                        Type = "Success",
-                        Duration = 3
-                    })
-                    -- Set to global for external access
-                    _G.Aurora_ExportedConfig = configJson
-                else
-                    Aurora:Notify({
-                        Title = "Export Failed",
-                        Message = "Failed to export configuration",
-                        Type = "Error",
-                        Duration = 3
-                    })
-                end
-            end
-        })
-        
-        local importInput = ConfigTab:CreateInput({
-            Text = "Import Config (JSON)",
-            Placeholder = "Paste JSON configuration here...",
-            Configurable = false
-        })
-        
-        local importBtn = ConfigTab:CreateButton({
-            Text = "Import Configuration",
-            Callback = function()
-                local configJson = importInput.GetValue()
-                if configJson == "" then
-                    Aurora:Notify({
-                        Title = "Error",
-                        Message = "Please paste a JSON configuration",
-                        Type = "Error",
-                        Duration = 3
-                    })
-                    return
-                end
-                
-                local profileName = "Imported_" .. tick()
-                if Aurora.Config:importProfile(configJson, profileName) then
-                    Aurora:Notify({
-                        Title = "Config Imported",
-                        Message = "Configuration imported as '" .. profileName .. "'",
-                        Type = "Success",
-                        Duration = 3
-                    })
-                    importInput.SetValue("")
-                else
-                    Aurora:Notify({
-                        Title = "Import Failed",
-                        Message = "Invalid JSON configuration format",
-                        Type = "Error",
-                        Duration = 3
-                    })
-                end
-            end
-        })
-        
-        -- Auto-Save Settings Section
-        ConfigTab:CreateSection("Auto-Save Settings")
-        
-        local autoSaveToggle = ConfigTab:CreateToggle({
-            Text = "Enable Auto-Save",
-            Default = Aurora.Config.autoSaveEnabled,
-            Configurable = false,
-            Callback = function(enabled)
-                Aurora.Config:setAutoSave(enabled)
-            end
-        })
-        
-        local autoSaveDelay = ConfigTab:CreateSlider({
-            Text = "Auto-Save Delay (seconds)",
-            Min = 0.5,
-            Max = 10,
-            Default = Aurora.Config.autoSaveDelay,
-            Increment = 0.5,
-            Configurable = false,
-            Callback = function(delay)
-                Aurora.Config:setAutoSave(Aurora.Config.autoSaveEnabled, delay)
-            end
-        })
-        
-        -- Profile Info Section
-        ConfigTab:CreateSection("Current Profile Info")
-        
-        local profileInfo = ConfigTab:CreateLabel("Profile: " .. Aurora.Config.currentProfile)
-        
-        -- Update profile info when profile changes
-        Aurora.Config.OnProfileChanged:Connect(function(newProfile)
-            profileInfo.SetValue("Profile: " .. newProfile)
-        end)
-        
-        -- Force save button
-        local forceSaveBtn = ConfigTab:CreateButton({
-            Text = "Force Save All Profiles",
-            Callback = function()
-                Aurora.Config:forceSave()
-                Aurora:Notify({
-                    Title = "Force Save",
-                    Message = "All profiles saved immediately",
-                    Type = "Success",
-                    Duration = 2
-                })
-            end
-        })
-        
-        return ConfigTab
     end
 
     -- ─────────────────────────────────────────
@@ -733,16 +894,6 @@ function Aurora:CreateWindow(config)
         --  Element helpers
         -- ─────────────────────────────────────
 
-        -- Helper function to generate config keys from element text
-        local function generateConfigKey(text)
-            -- Convert text to lowercase, replace spaces with underscores, remove special characters
-            local key = text:lower()
-            key = key:gsub("%s+", "_")
-            key = key:gsub("[^%w_]", "")
-            key = key:gsub("_+", "_")
-            return key
-        end
-
         local function BaseFrame(height)
             local f = Create("Frame", {
                 Parent           = TabContent,
@@ -757,7 +908,7 @@ function Aurora:CreateWindow(config)
         -- ownedConns: UIS connections that belong exclusively to this element.
         -- Added to windowConnections for Window:Destroy() cleanup, AND
         -- disconnected + pruned immediately when element.Destroy() is called.
-        local function RegisterElement(element, frame, ownedConns, configData)
+        local function RegisterElement(element, frame, ownedConns)
             ownedConns = ownedConns or {}
             for _, c in ipairs(ownedConns) do
                 table.insert(windowConnections, c)
@@ -769,22 +920,14 @@ function Aurora:CreateWindow(config)
             table.insert(Tab.Elements, element)
             Tab.OnElementAdded:Fire(element)
 
-            -- Register element for configuration if enabled
-            if configData and configData.Configurable then
-                local configKey = configData.ConfigKey or generateConfigKey(configData.Text or "element")
-                local metadata = {
-                    type = configData.Type or "unknown",
-                    category = configData.Category or "General",
-                    description = configData.Description or ""
-                }
-                
-                -- Access the global Aurora.Config instance
-                pcall(function()
-                    Aurora.Config:registerElement(element, configKey, metadata)
-                end)
-            end
-
             element.Destroy = function()
+                -- Unbind from config (if any) before tearing down
+                if Window.Config and Window.Config.Unbind then
+                    local key = element._configKey or element.Flag or element.Key or element._configKeyCandidate
+                    if key then
+                        pcall(Window.Config.Unbind, key)
+                    end
+                end
                 for _, c in ipairs(ownedConns) do
                     if c and c.Disconnect then c:Disconnect() end
                     for i, wc in ipairs(windowConnections) do
@@ -846,6 +989,14 @@ function Aurora:CreateWindow(config)
                         })
                         AddCorner(overlay, UDim.new(0, 4))
                     end
+                end
+            end
+
+            -- Auto-bind element to window config if it declares a key
+            if Window.Config and Window.Config.Bind then
+                local key = element.Flag or element.Key or element._configKeyCandidate
+                if key then
+                    pcall(Window.Config.Bind, element, key, element._configHint and { Hint = element._configHint } or nil)
                 end
             end
 
@@ -946,22 +1097,16 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement({
                 Frame     = frame,
+                _configKeyCandidate = cfg.Flag or cfg.Key,
                 OnChanged = OnChanged,
                 GetValue  = function() return toggled end,
-                SetValue  = function(val)
+                SetValue  = function(val, silent)
                     if toggled ~= val then
                         toggled = val
-                        Refresh(false)
+                        Refresh(silent == true)
                     end
                 end,
-            }, frame, nil, {
-                Configurable = cfg.Configurable,
-                ConfigKey = cfg.ConfigKey,
-                Text = cfg.Text,
-                Type = "toggle",
-                Category = cfg.Category,
-                Description = cfg.Description
-            })
+            }, frame)
         end
 
         -- ── Slider ────────────────────────────
@@ -1062,24 +1207,23 @@ function Aurora:CreateWindow(config)
             -- c1/c2 are frame-local (destroyed with frame); c3/c4 are UIS globals — pass as ownedConns
             return RegisterElement({
                 Frame     = frame,
+                _configKeyCandidate = cfg.Flag or cfg.Key,
                 OnChanged = OnChanged,
                 GetValue  = function() return current end,
-                SetValue  = function(val)
+                SetValue  = function(val, silent)
                     val = math.clamp(val, min, max)
+                    if val == current then return end
                     current = val
                     local f = (val - min) / (max - min)
                     Fill.Size       = UDim2.new(f, 0, 1, 0)
                     Knob.Position   = UDim2.new(f, -6, 0.5, -6)
                     ValueLabel.Text = tostring(val)
+                    if silent ~= true then
+                        if cfg.Callback then cfg.Callback(val) end
+                        OnChanged:Fire(val)
+                    end
                 end,
-            }, frame, { c3, c4 }, {
-                Configurable = cfg.Configurable,
-                ConfigKey = cfg.ConfigKey,
-                Text = cfg.Text,
-                Type = "slider",
-                Category = cfg.Category,
-                Description = cfg.Description
-            })
+            }, frame, { c3, c4 })
         end
 
         function Tab:CreateDropdown(cfg)
@@ -1183,22 +1327,20 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement({
                 Frame     = DropdownFrame,
+                _configKeyCandidate = cfg.Flag or cfg.Key,
                 OnChanged = OnChanged,
                 GetValue  = function() return selected end,
-                SetValue  = function(val)
-                    if table.find(options, val) then
-                        selected   = val
-                        Label.Text = (cfg.Text or "Dropdown") .. ": " .. val
+                SetValue  = function(val, silent)
+                    if not table.find(options, val) then return end
+                    if selected == val then return end
+                    selected   = val
+                    Label.Text = (cfg.Text or "Dropdown") .. ": " .. val
+                    if silent ~= true then
+                        if cfg.Callback then cfg.Callback(val) end
+                        OnChanged:Fire(val)
                     end
                 end,
-            }, DropdownFrame, nil, {
-                Configurable = cfg.Configurable,
-                ConfigKey = cfg.ConfigKey,
-                Text = cfg.Text,
-                Type = "dropdown",
-                Category = cfg.Category,
-                Description = cfg.Description
-            })
+            }, DropdownFrame)
         end
 
         -- ── SearchDropdown ────────────────────
@@ -1365,12 +1507,17 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement({
                 Frame     = DropFrame,
+                _configKeyCandidate = cfg.Flag or cfg.Key,
                 OnChanged = OnChanged,
                 GetValue  = function() return selected end,
-                SetValue  = function(val)
-                    if table.find(options, val) then
-                        selected         = val
-                        HeaderLabel.Text = labelText .. ": " .. val
+                SetValue  = function(val, silent)
+                    if not table.find(options, val) then return end
+                    if selected == val then return end
+                    selected         = val
+                    HeaderLabel.Text = labelText .. ": " .. val
+                    if silent ~= true then
+                        if cfg.Callback then cfg.Callback(val) end
+                        OnChanged:Fire(val)
                     end
                 end,
             }, DropFrame)
@@ -1541,9 +1688,10 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement({
                 Frame     = MultiFrame,
+                _configKeyCandidate = cfg.Flag or cfg.Key,
                 OnChanged = OnChanged,
                 GetValue  = function() return SelectedList() end,
-                SetValue  = function(vals)
+                SetValue  = function(vals, silent)
                     -- vals is an array of selected option strings
                     selected = {}
                     for _, v in ipairs(vals) do selected[v] = true end
@@ -1560,6 +1708,11 @@ function Aurora:CreateWindow(config)
                             if tick then tick.Text = on and "✓" or "" end
                             if lbl  then lbl.TextColor3 = on and Aurora.Config.Theme.Text or Aurora.Config.Theme.TextMuted end
                         end
+                    end
+                    if silent ~= true then
+                        local out = SelectedList()
+                        if cfg.Callback then cfg.Callback(out) end
+                        OnChanged:Fire(out)
                     end
                 end,
                 IsSelected = function(opt) return selected[opt] == true end,
@@ -1614,9 +1767,18 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement({
                 Frame     = frame,
+                _configKeyCandidate = cfg.Flag or cfg.Key,
                 OnChanged = OnChanged,
                 GetValue  = function() return InputBox.Text end,
-                SetValue  = function(val) InputBox.Text = val end,
+                SetValue  = function(val, silent)
+                    val = tostring(val or "")
+                    if InputBox.Text == val then return end
+                    InputBox.Text = val
+                    if silent ~= true then
+                        if cfg.Callback then cfg.Callback(val) end
+                        OnChanged:Fire(val)
+                    end
+                end,
             }, frame)
         end
 
@@ -1694,7 +1856,7 @@ function Aurora:CreateWindow(config)
             })
             AddCorner(NumBox, UDim.new(0, 4))
 
-            local function Commit(val)
+            local function Commit(val, silent)
                 val = math.clamp(math.floor(val / step + 0.5) * step, min, max)
                 if val == current then
                     NumBox.Text = tostring(current) -- reset display if clamped
@@ -1702,24 +1864,27 @@ function Aurora:CreateWindow(config)
                 end
                 current     = val
                 NumBox.Text = tostring(val)
-                if cfg.Callback then cfg.Callback(val) end
-                OnChanged:Fire(val)
+                if silent ~= true then
+                    if cfg.Callback then cfg.Callback(val) end
+                    OnChanged:Fire(val)
+                end
             end
 
-            MinusBtn.MouseButton1Click:Connect(function() Commit(current - step) end)
-            PlusBtn.MouseButton1Click:Connect(function()  Commit(current + step) end)
+            MinusBtn.MouseButton1Click:Connect(function() Commit(current - step, false) end)
+            PlusBtn.MouseButton1Click:Connect(function()  Commit(current + step, false) end)
 
             NumBox.FocusLost:Connect(function()
                 local n = tonumber(NumBox.Text)
-                if n then Commit(n)
+                if n then Commit(n, false)
                 else NumBox.Text = tostring(current) end  -- revert invalid input
             end)
 
             return RegisterElement({
                 Frame     = frame,
+                _configKeyCandidate = cfg.Flag or cfg.Key,
                 OnChanged = OnChanged,
                 GetValue  = function() return current end,
-                SetValue  = function(val) Commit(val) end,
+                SetValue  = function(val, silent) Commit(val, silent) end,
             }, frame)
         end
 
@@ -1797,11 +1962,18 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement({
                 Frame     = frame,
+                _configKeyCandidate = cfg.Flag or cfg.Key,
+                _configHint = "Enum.KeyCode",
                 OnChanged = OnChanged,
                 GetValue  = function() return current end,
-                SetValue  = function(key)
+                SetValue  = function(key, silent)
+                    if key == current then return end
                     current   = key
                     KeyBtn.Text = key == Enum.KeyCode.Unknown and "None" or key.Name
+                    if silent ~= true then
+                        if cfg.Callback then cfg.Callback(current) end
+                        OnChanged:Fire(current)
+                    end
                 end,
             }, frame, { cancelCon })
         end
@@ -2004,7 +2176,7 @@ function Aurora:CreateWindow(config)
             Create("UIPadding", {Parent = HexInput, PaddingLeft = UDim.new(0, 8)})
 
             -- ── Commit ───────────────────────
-            local function Commit()
+            local function Commit(silent)
                 color = Color3.fromHSV(h, s, v)
                 Preview.BackgroundColor3 = color
                 SVPad.BackgroundColor3   = Color3.fromHSV(h, 1, 1)
@@ -2014,8 +2186,10 @@ function Aurora:CreateWindow(config)
                     math.round(color.R * 255),
                     math.round(color.G * 255),
                     math.round(color.B * 255))
-                if cfg.Callback then cfg.Callback(color) end
-                OnChanged:Fire(color)
+                if silent ~= true then
+                    if cfg.Callback then cfg.Callback(color) end
+                    OnChanged:Fire(color)
+                end
             end
 
             -- SV drag
@@ -2026,14 +2200,14 @@ function Aurora:CreateWindow(config)
                     -- Also sample on initial click
                     s = math.clamp((inp.Position.X - SVPad.AbsolutePosition.X) / SVPad.AbsoluteSize.X, 0, 1)
                     v = 1 - math.clamp((inp.Position.Y - SVPad.AbsolutePosition.Y) / SVPad.AbsoluteSize.Y, 0, 1)
-                    Commit()
+                    Commit(false)
                 end
             end)
             local svMove = UserInputService.InputChanged:Connect(function(inp)
                 if svDragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
                     s = math.clamp((inp.Position.X - SVPad.AbsolutePosition.X) / SVPad.AbsoluteSize.X, 0, 1)
                     v = 1 - math.clamp((inp.Position.Y - SVPad.AbsolutePosition.Y) / SVPad.AbsoluteSize.Y, 0, 1)
-                    Commit()
+                    Commit(false)
                 end
             end)
             local svEnd = UserInputService.InputEnded:Connect(function(inp)
@@ -2047,13 +2221,13 @@ function Aurora:CreateWindow(config)
                 if inp.UserInputType == Enum.UserInputType.MouseButton1 then
                     hueDragging = true
                     h = math.clamp((inp.Position.Y - HueBar.AbsolutePosition.Y) / HueBar.AbsoluteSize.Y, 0, 1)
-                    Commit()
+                    Commit(false)
                 end
             end)
             local hueMove = UserInputService.InputChanged:Connect(function(inp)
                 if hueDragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
                     h = math.clamp((inp.Position.Y - HueBar.AbsolutePosition.Y) / HueBar.AbsoluteSize.Y, 0, 1)
-                    Commit()
+                    Commit(false)
                 end
             end)
             local hueEnd = UserInputService.InputEnded:Connect(function(inp)
@@ -2071,7 +2245,7 @@ function Aurora:CreateWindow(config)
                     if r and g and b then
                         color  = Color3.fromRGB(r, g, b)
                         h, s, v = Color3.toHSV(color)
-                        Commit()
+                        Commit(false)
                     end
                 end
             end)
@@ -2086,12 +2260,14 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement({
                 Frame     = PickerFrame,
+                _configKeyCandidate = cfg.Flag or cfg.Key,
+                _configHint = "Color3",
                 OnChanged = OnChanged,
                 GetValue  = function() return color end,
-                SetValue  = function(c)
+                SetValue  = function(c, silent)
                     color  = c
                     h, s, v = Color3.toHSV(c)
-                    Commit()
+                    Commit(silent == true)
                 end,
             }, PickerFrame, { svMove, svEnd, hueMove, hueEnd })
         end
@@ -2664,382 +2840,6 @@ function Aurora:Notify(cfg)
         RepositionNotifs()
     end)
 end
-
--- ─────────────────────────────────────────────
---  Configuration System
--- ─────────────────────────────────────────────
-
--- Configuration Manager - handles element registration, persistence, and profiles
-local ConfigManager = {}
-ConfigManager.__index = ConfigManager
-
-function ConfigManager.new()
-    local self = setmetatable({
-        -- Element registry: configKey -> {element, type, category, metadata}
-        elements = {},
-        
-        -- Profile management
-        currentProfile = "Default",
-        profiles = {},
-        
-        -- Auto-save settings
-        autoSaveEnabled = true,
-        autoSaveDelay = 2.0,
-        autoSaveTimer = nil,
-        pendingSave = false,
-        
-        -- Storage backend
-        storageKey = "Aurora_Configs",
-        
-        -- Events
-        OnProfileChanged = Signal.new(),
-        OnConfigSaved = Signal.new(),
-        OnConfigLoaded = Signal.new(),
-    }, ConfigManager)
-    
-    -- Load existing profiles on initialization
-    self:loadAllProfiles()
-    
-    -- Load default profile
-    self:loadProfile("Default")
-    
-    return self
-end
-
-function ConfigManager:registerElement(element, configKey, metadata)
-    metadata = metadata or {}
-    
-    -- Store element reference and metadata
-    self.elements[configKey] = {
-        element = element,
-        type = metadata.type or self:detectElementType(element),
-        category = metadata.category or "General",
-        description = metadata.description or "",
-        configKey = configKey,
-    }
-    
-    -- Connect to element's OnChanged signal for auto-save
-    if element.OnChanged then
-        element.OnChanged:Connect(function(value)
-            self:onElementChanged(configKey, value)
-        end)
-    end
-    
-    -- Set initial value from current profile if available
-    local profileData = self.profiles[self.currentProfile]
-    if profileData and profileData.elements[configKey] then
-        local savedValue = profileData.elements[configKey].value
-        if element.SetValue then
-            element.SetValue(savedValue)
-        end
-    end
-end
-
-function ConfigManager:detectElementType(element)
-    -- Detect element type based on available methods and properties
-    if element.GetValue then
-        local value = element.GetValue()
-        if type(value) == "boolean" then
-            return "toggle"
-        elseif type(value) == "number" then
-            return "slider"
-        elseif type(value) == "string" then
-            return "dropdown"
-        elseif type(value) == "table" then
-            return "multiselect"
-        end
-    end
-    return "unknown"
-end
-
-function ConfigManager:onElementChanged(configKey, value)
-    if not self.autoSaveEnabled then return end
-    
-    -- Update current profile data
-    local profileData = self.profiles[self.currentProfile]
-    if profileData then
-        if not profileData.elements[configKey] then
-            profileData.elements[configKey] = {
-                type = self.elements[configKey].type,
-                category = self.elements[configKey].category,
-            }
-        end
-        profileData.elements[configKey].value = value
-        profileData.timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
-    end
-    
-    -- Schedule auto-save
-    self:scheduleAutoSave()
-end
-
-function ConfigManager:scheduleAutoSave()
-    -- Cancel existing timer
-    if self.autoSaveTimer then
-        task.cancel(self.autoSaveTimer)
-        self.autoSaveTimer = nil
-    end
-    
-    self.pendingSave = true
-    
-    -- Schedule new save
-    self.autoSaveTimer = task.spawn(function()
-        task.wait(self.autoSaveDelay)
-        if self.pendingSave then
-            self:saveCurrentProfile()
-            self.pendingSave = false
-        end
-    end)
-end
-
-function ConfigManager:forceSave()
-    if self.autoSaveTimer then
-        task.cancel(self.autoSaveTimer)
-        self.autoSaveTimer = nil
-    end
-    self.pendingSave = false
-    self:saveCurrentProfile()
-end
-
-function ConfigManager:saveProfile(profileName)
-    profileName = profileName or self.currentProfile
-    
-    if not self.profiles[profileName] then
-        self.profiles[profileName] = {
-            version = "1.0",
-            profile = profileName,
-            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-            elements = {},
-            metadata = {
-                script_version = "unknown",
-                aurora_version = "6.5.0"
-            }
-        }
-    end
-    
-    -- Collect current values from all registered elements
-    for configKey, elementData in pairs(self.elements) do
-        local element = elementData.element
-        if element and element.GetValue then
-            local value = element.GetValue()
-            self.profiles[profileName].elements[configKey] = {
-                type = elementData.type,
-                value = value,
-                category = elementData.category,
-            }
-        end
-    end
-    
-    self.profiles[profileName].timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
-    
-    -- Save to storage
-    self:saveAllProfiles()
-    self.OnConfigSaved:Fire(profileName)
-end
-
-function ConfigManager:loadProfile(profileName)
-    if not self.profiles[profileName] then
-        warn("[Aurora Config] Profile '" .. profileName .. "' not found")
-        return false
-    end
-    
-    self.currentProfile = profileName
-    
-    -- Apply profile values to registered elements
-    local profileData = self.profiles[profileName]
-    for configKey, elementData in pairs(self.elements) do
-        local element = elementData.element
-        local savedData = profileData.elements[configKey]
-        
-        if element and element.SetValue and savedData then
-            element.SetValue(savedData.value)
-        end
-    end
-    
-    self.OnProfileChanged:Fire(profileName)
-    self.OnConfigLoaded:Fire(profileName)
-    return true
-end
-
-function ConfigManager:deleteProfile(profileName)
-    if profileName == "Default" then
-        warn("[Aurora Config] Cannot delete 'Default' profile")
-        return false
-    end
-    
-    if self.profiles[profileName] then
-        self.profiles[profileName] = nil
-        self:saveAllProfiles()
-        
-        -- Switch to Default if current profile was deleted
-        if self.currentProfile == profileName then
-            self:loadProfile("Default")
-        end
-        
-        return true
-    end
-    return false
-end
-
-function ConfigManager:createProfile(profileName, copyFrom)
-    if self.profiles[profileName] then
-        warn("[Aurora Config] Profile '" .. profileName .. "' already exists")
-        return false
-    end
-    
-    -- Create new profile
-    self.profiles[profileName] = {
-        version = "1.0",
-        profile = profileName,
-        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-        elements = {},
-        metadata = {
-            script_version = "unknown",
-            aurora_version = "6.5.0"
-        }
-    }
-    
-    -- Copy from existing profile if specified
-    if copyFrom and self.profiles[copyFrom] then
-        local sourceData = self.profiles[copyFrom]
-        for configKey, elementData in pairs(sourceData.elements) do
-            self.profiles[profileName].elements[configKey] = {
-                type = elementData.type,
-                value = elementData.value,
-                category = elementData.category,
-            }
-        end
-    end
-    
-    self:saveAllProfiles()
-    return true
-end
-
-function ConfigManager:listProfiles()
-    local profiles = {}
-    for name, _ in pairs(self.profiles) do
-        table.insert(profiles, name)
-    end
-    table.sort(profiles)
-    return profiles
-end
-
-function ConfigManager:exportProfile(profileName)
-    profileName = profileName or self.currentProfile
-    
-    if not self.profiles[profileName] then
-        return nil
-    end
-    
-    return HttpService:JSONEncode(self.profiles[profileName])
-end
-
-function ConfigManager:importProfile(configJson, profileName)
-    profileName = profileName or "Imported Profile"
-    
-    local success, data = pcall(HttpService.JSONDecode, HttpService, configJson)
-    if not success then
-        warn("[Aurora Config] Invalid JSON format")
-        return false
-    end
-    
-    -- Validate data structure
-    if not data or type(data) ~= "table" or not data.elements then
-        warn("[Aurora Config] Invalid config format")
-        return false
-    end
-    
-    -- Create profile with imported data
-    self.profiles[profileName] = {
-        version = data.version or "1.0",
-        profile = profileName,
-        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-        elements = data.elements,
-        metadata = data.metadata or {
-            script_version = "unknown",
-            aurora_version = "6.5.0"
-        }
-    }
-    
-    self:saveAllProfiles()
-    return true
-end
-
-function ConfigManager:setAutoSave(enabled, delay)
-    self.autoSaveEnabled = enabled
-    if delay then
-        self.autoSaveDelay = delay
-    end
-end
-
-function ConfigManager:saveCurrentProfile()
-    self:saveProfile(self.currentProfile)
-end
-
--- Storage backend implementation
-function ConfigManager:saveAllProfiles()
-    local success, encoded = pcall(HttpService.JSONEncode, HttpService, self.profiles)
-    if success then
-        -- Use Roblox's appropriate storage method
-        if player then
-            local HttpService = game:GetService("HttpService")
-            local encoded = HttpService:JSONEncode(self.profiles)
-            
-            -- Store in player's DataStore or local storage
-            -- For now, we'll use a simple approach with HttpService for persistence
-            -- In a real implementation, this would use DataStoreService or similar
-            pcall(function()
-                -- This is a placeholder - actual storage implementation would depend on the target platform
-                _G.Aurora_Configs = encoded
-            end)
-        end
-    else
-        warn("[Aurora Config] Failed to encode profiles for saving")
-    end
-end
-
-function ConfigManager:loadAllProfiles()
-    -- Load profiles from storage
-    pcall(function()
-        local stored = _G.Aurora_Configs
-        if stored then
-            local success, data = pcall(HttpService.JSONDecode, HttpService, stored)
-            if success and type(data) == "table" then
-                self.profiles = data
-                
-                -- Ensure Default profile exists
-                if not self.profiles.Default then
-                    self.profiles.Default = {
-                        version = "1.0",
-                        profile = "Default",
-                        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-                        elements = {},
-                        metadata = {
-                            script_version = "unknown",
-                            aurora_version = "6.5.0"
-                        }
-                    }
-                end
-            end
-        end
-    end)
-    
-    -- Ensure Default profile exists
-    if not self.profiles.Default then
-        self.profiles.Default = {
-            version = "1.0",
-            profile = "Default",
-            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-            elements = {},
-            metadata = {
-                script_version = "unknown",
-                aurora_version = "6.5.0"
-            }
-        }
-    end
-end
-
--- Create global ConfigManager instance
-Aurora.Config = ConfigManager.new()
 
 -- ─────────────────────────────────────────────
 --  Theme API
