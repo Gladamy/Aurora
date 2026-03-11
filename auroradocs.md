@@ -1,5 +1,5 @@
 # Aurora UI Library
-**Version 6.6.0** — A minimalistic, production-quality UI library for Roblox executors.
+**Version 6.5.0** — A minimalistic, production-quality UI library for Roblox executors.
 
 ---
 
@@ -563,6 +563,30 @@ Tab:CreateSlider({ Text = "Speed", ... })
 
 ---
 
+### `Tab:CreateConfigManager(config) → element`
+
+A visual config management panel with save/load/delete controls and a config list. See [Config System](#config-system) for full details.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `Text` | string | `"Configuration Manager"` | Title label |
+| `AutoLoad` | boolean | `false` | Automatically load last used config on creation |
+
+**Extra methods:**
+
+| Method | Description |
+|---|---|
+| `element.RefreshList()` | Updates the displayed config list |
+
+```lua
+Settings:CreateConfigManager({
+    Text     = "Configuration Manager",
+    AutoLoad = true,  -- auto-load last config
+})
+```
+
+---
+
 ## Element API Reference
 
 Every element returned by any `Tab:Create*` method exposes the following in addition to its own fields:
@@ -636,6 +660,138 @@ shopRestockSignal:Once(function()
     buyAllSeeds()
 end)
 ```
+
+---
+
+## Config System
+
+Aurora provides a complete configuration management system for saving and loading UI element states. Configs are stored as plain JSON in `workspace/AuroraConfigs/[WindowTitle]/`.
+
+### Quick Start
+
+Enable config tracking on elements by adding `ConfigName` to their configuration:
+
+```lua
+local Window = Aurora:CreateWindow({ Title = "MyScript" })
+local Tab = Window:CreateTab({ Name = "Settings" })
+
+-- These elements will be tracked for config
+Tab:CreateToggle({
+    Text       = "Auto Farm",
+    ConfigName = "autoFarm",  -- enables config tracking
+    Default    = false,
+    Callback   = function(v) end,
+})
+
+Tab:CreateSlider({
+    Text       = "Speed",
+    ConfigName = "speed",     -- enables config tracking
+    Min        = 1, Max = 100,
+    Default    = 50,
+})
+
+Tab:CreateColorPicker({
+    Text       = "ESP Color",
+    ConfigName = "espColor",  -- enables config tracking
+    Default    = Color3.fromRGB(255,0,0),
+})
+```
+
+### Creating a Config Manager UI
+
+Add a visual config manager to your Settings tab:
+
+```lua
+local Settings = Window:CreateTab({ Name = "Settings" })
+
+Settings:CreateConfigManager({
+    Text      = "Configuration Manager",
+    AutoLoad  = true,  -- automatically load last used config
+})
+```
+
+The manager includes:
+- **Save** — saves current element values to a named config
+- **Load** — restores element values from a saved config
+- **Delete** — removes a config file
+- **Refresh** — updates the config list
+- **Click-to-fill** — click any config name in the list to populate the input
+
+### Programmatic API
+
+#### Window Methods
+
+```lua
+-- Save current state to a config
+local success, error = Window:SaveConfig("PvP Setup")
+
+-- Load a config and apply to all tracked elements
+local success, error = Window:LoadConfig("PvP Setup")
+```
+
+#### ConfigManager API
+
+```lua
+-- List all configs for this window
+local configs = Aurora.ConfigManager:List(Window._title)
+-- Returns: {"PvP Setup", "Farm Setup", "Default"}
+
+-- Delete a config
+Aurora.ConfigManager:Delete("Old Config", Window._title)
+
+-- Export config as JSON string (for sharing)
+local jsonString = Aurora.ConfigManager:Export("PvP Setup", Window._title)
+
+-- Import config from JSON string
+Aurora.ConfigManager:Import("Imported Setup", jsonString, Window._title)
+
+-- Get last loaded/saved config name
+local lastConfig = Aurora.ConfigManager:GetLastConfig(Window._title)
+
+-- Set last config (usually done automatically)
+Aurora.ConfigManager:SetLastConfig(Window._title, "PvP Setup")
+
+-- Enable auto-save every N seconds (optional)
+Aurora.ConfigManager:EnableAutoSave(60, Window, "AutoSave")
+```
+
+### Supported Element Types
+
+All elements with `GetValue()` and `SetValue()` methods support config tracking:
+
+| Element | Config Value Type |
+|---|---|
+| `CreateToggle` | `boolean` |
+| `CreateSlider` | `number` |
+| `CreateDropdown` | `string` (selected option) |
+| `CreateSearchDropdown` | `string` (selected option) |
+| `CreateMultiSelect` | `table` (array of selected strings) |
+| `CreateInput` | `string` |
+| `CreateNumberInput` | `number` |
+| `CreateKeybind` | `Enum.KeyCode` |
+| `CreateColorPicker` | `Color3` (serialized as hex) |
+
+### Config File Format
+
+Configs are stored as plain JSON with metadata:
+
+```json
+{
+    "version": "6.6.0",
+    "created": 1705000000,
+    "modified": 1705003600,
+    "metadata": {},
+    "values": {
+        "Settings": {
+            "autoFarm": true,
+            "speed": 75,
+            "espColor": {"__type": "Color3", "value": "#FF0000"}
+        }
+    }
+}
+```
+
+Special types like `Color3` and `KeyCode` are automatically serialized/deserialized.
 
 ---
 
@@ -734,377 +890,6 @@ Settings:CreateDropdown({
         Aurora:SetTheme({ Primary = map[val], Glow = map[val] })
     end,
 })
-
-## Config System — Persistent Settings
-
-**Version 6.6.0+** — Automatically save and restore UI element values across script restarts.
-
-**Executor Support:** Delta, Velocity, Volt (uses `writefile`/`readfile`).
-
-### Quick Start
-
-```lua
-local Aurora = loadstring(game:HttpGet(url))()
-local Window = Aurora:CreateWindow({ Title = "My Script" })
-local Tab = Window:CreateTab({ Name = "Settings" })
-
--- Create a config (auto-loads on creation, auto-saves on changes)
-local Config = Aurora:CreateConfig({
-    Name     = "MyScript",      -- unique name for the config file
-    Version  = 1,               -- for future migrations
-    Exclude  = {"webhook"},     -- keys that should NEVER be saved
-})
-
--- Create UI elements and register them
-local toggle = Tab:CreateToggle({ Text = "Auto Farm", Default = false })
-Config:Register("autoFarm", toggle)
-
-local slider = Tab:CreateSlider({
-    Text = "Speed", Min = 16, Max = 200, Default = 16
-})
-Config:Register("speed", slider)
-
--- That's it. Values are saved automatically and restored on next run.
-```
-
----
-
-### `Aurora:CreateConfig(options) → Config`
-
-Creates a persistent configuration manager.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `Name` | string | `"AuroraConfig"` | Unique identifier for this config |
-| `Version` | number | `1` | Config version for migrations |
-| `AutoSave` | boolean | `true` | Automatically save when values change |
-| `AutoLoad` | boolean | `true` | Automatically load on creation |
-| `Exclude` | table (array) | `{}` | Keys that should never be saved (e.g., `{"webhook", "password"}`) |
-
-Files are stored in `AuroraConfigs/Name_v{Version}.json`.
-
----
-
-### `Config:Register(key, element, options?)`
-
-Bind a UI element to a config key. The element's value will be auto-saved on change and restored on load.
-
-```lua
-Config:Register("myToggle", myToggle)
-Config:Register("mySlider", mySlider, { Default = 50 })
-Config:Register("myInput", myInput, {
-    Default = "",
-    Validate = function(v) return #v > 0 end,  -- reject empty strings
-})
-```
-
-| Option | Type | Description |
-|---|---|---|
-| `Default` | any | Value to use if no saved value exists |
-| `Validate` | function(value) → boolean | Reject invalid values before applying |
-| `Transform` | function(value) → value | Modify value before applying to element |
-
----
-
-### `Config:Get(key, default?) → value`
-
-Retrieve a raw config value (bypassing the UI element).
-
-```lua
-local speed = Config:Get("speed", 16)
-```
-
----
-
-### `Config:Set(key, value)`
-
-Set a raw config value and update the bound UI element.
-
-```lua
-Config:Set("speed", 100)  -- updates the slider too
-```
-
----
-
-### `Config:OnChanged(key, callback) → Connection`
-
-Subscribe to changes on a specific key.
-
-```lua
-Config:OnChanged("autoFarm", function(newValue)
-    print("Auto farm is now:", newValue)
-end)
-```
-
----
-
-### `Config:Save()` / `Config:Load()` / `Config:Reset()`
-
-Manual control when `AutoSave`/`AutoLoad` are disabled.
-
-```lua
-local Config = Aurora:CreateConfig({
-    Name     = "MyScript",
-    AutoSave = false,  -- manual control
-    AutoLoad = false,
-})
-
--- Load when ready
-Config:Load()
-
--- Save when button clicked
-Tab:CreateButton({
-    Text = "Save Settings",
-    Callback = function() Config:Save() end,
-})
-
--- Reset to defaults
-Tab:CreateButton({
-    Text = "Reset to Defaults",
-    Callback = function() Config:Reset() end,
-})
-```
-
----
-
-### `Config:Export() → string` / `Config:Import(jsonString) → bool`
-
-Export config as JSON string for sharing or backup. Import parses and applies a JSON config.
-
-```lua
--- Export to share
-local json = Config:Export()
-print(json)  -- copy this string
-
--- Import from another user
-local success = Config:Import('{"autoFarm":true,"speed":150}')
-```
-
----
-
-### `Config:IsExcluded(key) → bool`
-
-Check if a key is in the exclusion list (will never be saved).
-
-```lua
-if not Config:IsExcluded("webhook") then
-    Config:Register("webhook", webhookInput)
-end
-```
-
----
-
-### Profile System
-
-The Config system supports multiple named profiles, allowing users to switch between different configuration sets instantly.
-
-#### `Config:EnableProfiles()`
-
-Enable profile support on a Config instance. Must be called before using other profile methods.
-
-```lua
-local Config = Aurora:CreateConfig({
-    Name    = "GardenShovel",
-    Version = 1,
-    Exclude = {"webhookUrl"},
-})
-
--- Enable profiles (stores in AuroraConfigs/Profiles_GardenShovel/)
-Config:EnableProfiles()
-```
-
----
-
-#### `Config:CreateProfile(name) → bool`
-
-Create a new named profile. Returns `true` on success, `false` if profile already exists or name is invalid.
-
-```lua
-local ok = Config:CreateProfile("PVP Build")
-if ok then
-    print("Created PVP Build profile")
-end
-```
-
----
-
-#### `Config:DeleteProfile(name) → bool`
-
-Delete a profile. Cannot delete "default" or the currently active profile.
-
-```lua
-Config:DeleteProfile("Old Build")
-```
-
----
-
-#### `Config:ListProfiles() → table`
-
-Get a list of all profile names.
-
-```lua
-local profiles = Config:ListProfiles()
-for _, name in ipairs(profiles) do
-    print("Profile:", name)
-end
--- Output: "default", "PVP Build", "Farming Build"
-```
-
----
-
-#### `Config:GetCurrentProfile() → string`
-
-Get the currently active profile name.
-
-```lua
-print("Using profile:", Config:GetCurrentProfile())
-```
-
----
-
-#### `Config:SwitchProfile(name) → bool`
-
-Switch to a different profile. Saves current profile first, then loads the new one. Returns `true` on success.
-
-```lua
--- Switch to farming configuration
-Config:SwitchProfile("Farming Build")
-
--- All UI elements update to reflect the new profile's values
-```
-
----
-
-### Full Profile Example
-
-```lua
-local Aurora = loadstring(game:HttpGet(url))()
-local Window = Aurora:CreateWindow({ Title = "Multi-Profile Script" })
-local SettingsTab = Window:CreateTab({ Name = "Settings" })
-local CombatTab = Window:CreateTab({ Name = "Combat" })
-
--- Create config and enable profiles
-local Config = Aurora:CreateConfig({
-    Name    = "MyScript",
-    Version = 1,
-})
-Config:EnableProfiles()
-
--- Profile selector UI
-SettingsTab:CreateSection("Profiles")
-
-local profileDropdown = SettingsTab:CreateDropdown({
-    Text    = "Active Profile",
-    Options = Config:ListProfiles(),
-    Default = Config:GetCurrentProfile(),
-    Callback = function(selected)
-        Config:SwitchProfile(selected)
-    end,
-})
-
--- Create new profile
-SettingsTab:CreateInput({ Text = "New Profile Name", Placeholder = "Enter name..." })
-SettingsTab:CreateButton({
-    Text = "Create Profile",
-    Callback = function()
-        local name = -- get from input
-        if Config:CreateProfile(name) then
-            Config:SwitchProfile(name)
-        end
-    end,
-})
-
--- Combat settings (per-profile)
-CombatTab:CreateSection("Combat Settings")
-
-local autoAttack = CombatTab:CreateToggle({ Text = "Auto Attack", Default = false })
-Config:Register("autoAttack", autoAttack)
-
-local attackRange = CombatTab:CreateSlider({ Text = "Range", Min = 5, Max = 50, Default = 20 })
-Config:Register("attackRange", attackRange)
-
--- Now each profile has separate autoAttack and attackRange values!
-```
-
----
-
-### Supported Value Types
-
-The Config system automatically serializes and deserializes:
-
-- **Primitives:** `string`, `number`, `boolean`, `nil`
-- **Roblox Types:** `Color3`, `EnumItem`, `UDim`, `UDim2`, `Vector2`, `Vector3`
-- **Tables:** Nested tables with any supported values
-
----
-
-### Full Example: Garden Shovel Script
-
-```lua
-local Aurora = loadstring(game:HttpGet(url))()
-local Window = Aurora:CreateWindow({ Title = "Garden Shovel" })
-
-local SettingsTab = Window:CreateTab({ Name = "Settings" })
-local ShovelTab   = Window:CreateTab({ Name = "Shovel" })
-
--- Config with webhook excluded (security)
-local Config = Aurora:CreateConfig({
-    Name    = "GardenShovel",
-    Version = 1,
-    Exclude = {"webhookUrl"},  -- NEVER save webhook URLs
-})
-
--- Settings Tab
-SettingsTab:CreateSection("Discord")
-local webhookInput = SettingsTab:CreateInput({
-    Text = "Webhook URL",
-    Placeholder = "https://discord.com/api/webhooks/...",
-})
--- Don't register webhook - we excluded it
-
-local antiAfkToggle = SettingsTab:CreateToggle({ Text = "Anti-AFK", Default = false })
-Config:Register("antiAfk", antiAfkToggle)
-
--- Shovel Tab
-ShovelTab:CreateSection("Filters")
-local fruitMulti = ShovelTab:CreateMultiSelect({
-    Text    = "Fruit Types",
-    Options = {"Apple", "Banana", "Cherry"},
-    Default = {},
-})
-Config:Register("shovelFruits", fruitMulti)
-
-local rarityMulti = ShovelTab:CreateMultiSelect({
-    Text    = "Rarities to Shovel",
-    Options = {"Normal", "Silver", "Gold"},
-    Default = {"Normal"},
-})
-Config:Register("shovelRarities", rarityMulti)
-
-local weightSlider = ShovelTab:CreateSlider({
-    Text    = "Max Weight (KG)",
-    Min     = 0,
-    Max     = 10,
-    Default = 0,
-    Step    = 0.1,
-})
-Config:Register("maxWeight", weightSlider, { Default = 0 })
-
--- All values auto-save and restore on next run!
-```
-
----
-
-### Legacy API
-
-For simple scripts that don't need element binding:
-
-```lua
--- Save raw data table
-Aurora.ConfigSystem:Save("MyData", { speed = 100, enabled = true })
-
--- Load it back
-local data = Aurora.ConfigSystem:Load("MyData") or { speed = 16, enabled = false }
 ```
 
 ---
@@ -1112,6 +897,12 @@ local data = Aurora.ConfigSystem:Load("MyData") or { speed = 16, enabled = false
 ---
 
 ## Troubleshooting
+
+### UI doesn't appear after running the script
+
+**Cause:** Your executor cached the old version of `Aurora.lua` from a previous `HttpGet` call.
+
+**Fix:** Wait 30–60 seconds and re-run. Some executors cache HTTP responses aggressively. If it still fails, try appending a cache-busting query string:
 
 ```lua
 local url = "https://raw.githubusercontent.com/Gladamy/Aurora/refs/heads/main/Aurora.lua"
@@ -1215,7 +1006,7 @@ end)
 
 | Version | Changes |
 |---|---|
-| 6.6.0 | **New:** `Aurora:CreateConfig` — Persistent settings system with auto-save/load, element binding, Export/Import, and excluded keys for security (webhooks, passwords). Supports Delta, Velocity, Volt executors. |
+| 6.6.0 | **New:** Config System with `Aurora.ConfigManager`, `Window:SaveConfig`, `Window:LoadConfig`, `Tab:CreateConfigManager` · Auto-save/load with `ConfigName` parameter · Import/Export configs as JSON · Plain JSON storage in `workspace/AuroraConfigs/` |
 | 6.5.0 | **New:** `Tab:CreateProgressBar` · `Tab:CreateStatusLabel` · `CreateTable.SetRowColor` / `ClearRowColor` (with correct MouseLeave restore via per-row upvalue) · `Signal:Once` single-fire connections |
 | 6.4.0 | `TabContainer` reflow connection stored in `windowConnections` |
 | 6.2.0 | `element.Destroy()` disconnects owned UIS connections (Slider/Keybind/ColorPicker) · `MultiSelect` + `ColorPicker` register in `_dropdownCollapse` · `RegisterElement` accepts `ownedConns` |
