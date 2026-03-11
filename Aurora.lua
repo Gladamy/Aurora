@@ -2771,6 +2771,257 @@ function Aurora:CreateConfig(options)
         return self._path
     end
 
+    -- ─────────────────────────────────────────────
+    -- Profile System Extension
+    -- ─────────────────────────────────────────────
+
+    Config._profiles = {}
+    Config._currentProfile = "default"
+    Config._profilePath = nil
+
+    -- Initialize profile support (call after Config creation)
+    function Config:EnableProfiles()
+        self._profiles = {}
+        self._currentProfile = "default"
+        -- Profiles stored in subfolder
+        local profileFolder = "AuroraConfigs/Profiles_" .. self._name
+        MakeFolder(profileFolder)
+        self._profilePath = profileFolder
+
+        -- Scan existing profiles
+        self:_scanProfiles()
+        return self
+    end
+
+    -- Scan for existing profile files
+    function Config:_scanProfiles()
+        if not self:_canUseFiles() or not self._profilePath then return end
+        self._profiles = {}
+        -- Default profile always exists
+        table.insert(self._profiles, "default")
+
+        -- Look for profile files: Profile_<name>.json
+        -- Since we can't list directories, we check a known location pattern
+        -- Profile list is stored in a manifest file
+        local manifestPath = self._profilePath .. "/_manifest.json"
+        if FileExists(manifestPath) then
+            local ok, content = pcall(FileRead, manifestPath)
+            if ok and content then
+                local ok2, decoded = pcall(HttpService.JSONDecode, HttpService, content)
+                if ok2 and type(decoded) == "table" then
+                    for _, name in ipairs(decoded) do
+                        if name ~= "default" and not table.find(self._profiles, name) then
+                            table.insert(self._profiles, name)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Save profile manifest
+    function Config:_saveManifest()
+        if not self:_canUseFiles() or not self._profilePath then return end
+        local manifestPath = self._profilePath .. "/_manifest.json"
+        local ok, encoded = pcall(HttpService.JSONEncode, HttpService, self._profiles)
+        if ok then
+            pcall(function() writefile(manifestPath, encoded) end)
+        end
+    end
+
+    -- Get profile file path
+    function Config:_getProfileFile(profileName)
+        if not self._profilePath then return nil end
+        local safeName = profileName:gsub("[^%w_-]", "")
+        return self._profilePath .. "/Profile_" .. safeName .. ".json"
+    end
+
+    -- Create a new profile
+    function Config:CreateProfile(name)
+        if not name or name == "" or name == "default" then return false end
+        if table.find(self._profiles, name) then return false end
+
+        table.insert(self._profiles, name)
+        self:_saveManifest()
+
+        -- Create empty profile file
+        local profileFile = self:_getProfileFile(name)
+        if profileFile and self:_canUseFiles() then
+            pcall(function() writefile(profileFile, "{}") end)
+        end
+
+        return true
+    end
+
+    -- Delete a profile (can't delete default or current)
+    function Config:DeleteProfile(name)
+        if name == "default" or name == self._currentProfile then return false end
+        local idx = table.find(self._profiles, name)
+        if not idx then return false end
+
+        table.remove(self._profiles, idx)
+        self:_saveManifest()
+
+        -- Delete profile file
+        local profileFile = self:_getProfileFile(name)
+        if profileFile and self:_canUseFiles() then
+            pcall(function() delfile(profileFile) end)
+        end
+
+        return true
+    end
+
+    -- List all profiles
+    function Config:ListProfiles()
+        return self._profiles
+    end
+
+    -- Get current profile name
+    function Config:GetCurrentProfile()
+        return self._currentProfile
+    end
+
+    -- Switch to a different profile
+    function Config:SwitchProfile(name)
+        if not table.find(self._profiles, name) then return false end
+        if name == self._currentProfile then return true end
+
+        -- Save current profile first
+        if self._currentProfile then
+            self:_saveToProfileFile(self._currentProfile)
+        end
+
+        -- Clear current data
+        self._data = {}
+        for key, binding in pairs(self._bindings) do
+            if binding.default ~= nil and binding.element.SetValue then
+                pcall(function() binding.element.SetValue(binding.default) end)
+            end
+        end
+
+        -- Switch profile
+        self._currentProfile = name
+
+        -- Load new profile
+        self:_loadFromProfileFile(name)
+
+        return true
+    end
+
+    -- Save current data to profile file
+    function Config:_saveToProfileFile(profileName)
+        if not self:_canUseFiles() then return end
+        local profileFile = self:_getProfileFile(profileName)
+        if not profileFile then return end
+
+        -- Collect current values
+        for key, binding in pairs(self._bindings) do
+            if not self._excluded[key] and binding.element.GetValue then
+                local ok, val = pcall(function() return binding.element.GetValue() end)
+                if ok then
+                    self._data[key] = val
+                end
+            end
+        end
+
+        local toSave = {}
+        for key, value in pairs(self._data) do
+            if not self._excluded[key] then
+                toSave[key] = self:_serialize(value)
+            end
+        end
+
+        local ok, encoded = pcall(HttpService.JSONEncode, HttpService, toSave)
+        if ok then
+            pcall(function() writefile(profileFile, encoded) end)
+        end
+    end
+
+    -- Load data from profile file
+    function Config:_loadFromProfileFile(profileName)
+        if not self:_canUseFiles() then return false end
+        local profileFile = self:_getProfileFile(profileName)
+        if not profileFile or not FileExists(profileFile) then return false end
+
+        local ok, content = pcall(FileRead, profileFile)
+        if not ok or not content then return false end
+
+        local ok2, decoded = pcall(HttpService.JSONDecode, HttpService, content)
+        if not ok2 or type(decoded) ~= "table" then return false end
+
+        -- Deserialize and apply
+        for key, value in pairs(decoded) do
+            if not self._excluded[key] then
+                self._data[key] = self:_deserialize(value)
+            end
+        end
+
+        -- Apply to elements
+        for key, binding in pairs(self._bindings) do
+            local stored = self._data[key]
+            if stored ~= nil then
+                local element = binding.element
+                local validate = binding.validate
+                local transform = binding.transform
+
+                if validate and not validate(stored) then
+                    stored = binding.default
+                end
+                if transform then
+                    stored = transform(stored)
+                end
+                if element.SetValue then
+                    pcall(function() element.SetValue(stored) end)
+                end
+            elseif binding.default ~= nil then
+                if element.SetValue then
+                    pcall(function() element.SetValue(binding.default) end)
+                end
+            end
+        end
+
+        return true
+    end
+
+    -- Override Save to use profile-aware saving
+    Config._baseSave = Config.Save
+    function Config:Save()
+        if self._profilePath and self._currentProfile then
+            self:_saveToProfileFile(self._currentProfile)
+            return true
+        end
+        return self:_baseSave()
+    end
+
+    -- Override Load to use profile-aware loading
+    Config._baseLoad = Config.Load
+    function Config:Load()
+        if self._profilePath and self._currentProfile then
+            return self:_loadFromProfileFile(self._currentProfile)
+        end
+        return self:_baseLoad()
+    end
+
+    -- Override Reset to use profile-aware resetting
+    Config._baseReset = Config.Reset
+    function Config:Reset()
+        self._data = {}
+        if self._profilePath and self._currentProfile then
+            local profileFile = self:_getProfileFile(self._currentProfile)
+            if profileFile and self:_canUseFiles() then
+                pcall(function() writefile(profileFile, "{}") end)
+            end
+        elseif self:_canUseFiles() and FileExists(self._path) then
+            pcall(function() writefile(self._path, "{}") end)
+        end
+
+        for key, binding in pairs(self._bindings) do
+            if binding.default ~= nil and binding.element.SetValue then
+                pcall(function() binding.element.SetValue(binding.default) end)
+            end
+        end
+    end
+
     -- Auto-load on creation
     if autoLoad then
         Config:Load()
