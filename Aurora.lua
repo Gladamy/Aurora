@@ -1,6 +1,6 @@
 --// Aurora UI Library
 --// A minimalistic, beautiful UI library for Roblox
---// Version: 6.5.0
+--// Version: 6.6.0
 
 local Aurora = {}
 local TweenService     = game:GetService("TweenService")
@@ -2411,6 +2411,404 @@ function Aurora:SetTheme(newTheme)
             Aurora.Config.Theme[k] = v
         end
     end
+end
+
+-- ─────────────────────────────────────────────
+--  Config System — Persistent settings for scripts
+--  Supports: Delta, Velocity, Volt (writefile/readfile)
+-- ─────────────────────────────────────────────
+
+Aurora.ConfigSystem = {}
+
+local HttpService = game:GetService("HttpService")
+
+local function FileRead(path)
+    if type(readfile) == "function" then
+        return readfile(path)
+    end
+    return nil
+end
+
+local function FileWrite(path, content)
+    if type(writefile) == "function" then
+        writefile(path, content)
+        return true
+    end
+    return false
+end
+
+local function FileExists(path)
+    if type(isfile) == "function" then
+        return isfile(path)
+    end
+    return false
+end
+
+local function MakeFolder(path)
+    if type(makefolder) == "function" then
+        makefolder(path)
+    end
+end
+
+function Aurora:CreateConfig(options)
+    options = options or {}
+    local configName = options.Name or "AuroraConfig"
+    local autoSave = options.AutoSave ~= false
+    local autoLoad = options.AutoLoad ~= false
+    local excludedKeys = options.Exclude or {} -- keys never saved (e.g., {"webhook", "password"})
+    local version = options.Version or 1
+
+    local folder = "AuroraConfigs"
+    local filePath = folder .. "/" .. configName .. "_v" .. version .. ".json"
+
+    MakeFolder(folder)
+
+    local Config = {
+        _name = configName,
+        _path = filePath,
+        _version = version,
+        _data = {},
+        _bindings = {}, -- key -> {element, transform, validate}
+        _onChanged = {}, -- key -> Signal
+        _autoSave = autoSave,
+        _excluded = {},
+        _loaded = false,
+    }
+
+    -- Build excluded set for O(1) lookup
+    for _, key in ipairs(excludedKeys) do
+        Config._excluded[key] = true
+    end
+
+    -- Signal factory for per-key changes
+    local function GetSignal(key)
+        if not Config._onChanged[key] then
+            Config._onChanged[key] = Signal.new()
+        end
+        return Config._onChanged[key]
+    end
+
+    -- Internal: Check if executor supports file I/O
+    function Config:_canUseFiles()
+        return type(writefile) == "function" and type(readfile) == "function"
+    end
+
+    -- Internal: Serialize value for storage
+    function Config:_serialize(value)
+        local t = typeof(value)
+        if t == "Color3" then
+            return { __type = "Color3", r = value.R, g = value.G, b = value.B }
+        elseif t == "EnumItem" then
+            return { __type = "Enum", class = tostring(value.EnumType), value = value.Name }
+        elseif t == "UDim2" then
+            return { __type = "UDim2", x = { value.X.Scale, value.X.Offset }, y = { value.Y.Scale, value.Y.Offset } }
+        elseif t == "UDim" then
+            return { __type = "UDim", scale = value.Scale, offset = value.Offset }
+        elseif t == "Vector2" then
+            return { __type = "Vector2", x = value.X, y = value.Y }
+        elseif t == "Vector3" then
+            return { __type = "Vector3", x = value.X, y = value.Y, z = value.Z }
+        elseif t == "table" then
+            local copy = {}
+            for k, v in pairs(value) do
+                copy[k] = self:_serialize(v)
+            end
+            return copy
+        end
+        return value
+    end
+
+    -- Internal: Deserialize value from storage
+    function Config:_deserialize(value)
+        if type(value) ~= "table" then return value end
+        if value.__type == "Color3" then
+            return Color3.new(value.r, value.g, value.b)
+        elseif value.__type == "Enum" then
+            local success, enum = pcall(function()
+                return Enum[value.class][value.value]
+            end)
+            return success and enum or nil
+        elseif value.__type == "UDim2" then
+            return UDim2.new(value.x[1], value.x[2], value.y[1], value.y[2])
+        elseif value.__type == "UDim" then
+            return UDim.new(value.scale, value.offset)
+        elseif value.__type == "Vector2" then
+            return Vector2.new(value.x, value.y)
+        elseif value.__type == "Vector3" then
+            return Vector3.new(value.x, value.y, value.z)
+        else
+            local copy = {}
+            for k, v in pairs(value) do
+                copy[k] = self:_deserialize(v)
+            end
+            return copy
+        end
+    end
+
+    -- Load config from file
+    function Config:Load()
+        if not self:_canUseFiles() then return false end
+        if not FileExists(self._path) then return false end
+
+        local success, content = pcall(FileRead, self._path)
+        if not success or not content then return false end
+
+        local ok, decoded = pcall(HttpService.JSONDecode, HttpService, content)
+        if not ok or type(decoded) ~= "table" then return false end
+
+        -- Merge loaded data (skip excluded keys)
+        for key, value in pairs(decoded) do
+            if not self._excluded[key] then
+                self._data[key] = self:_deserialize(value)
+            end
+        end
+
+        -- Apply to registered elements
+        for key, binding in pairs(self._bindings) do
+            local stored = self._data[key]
+            if stored ~= nil then
+                local element = binding.element
+                local validate = binding.validate
+                local transform = binding.transform
+
+                -- Validate if provided
+                if validate and not validate(stored) then
+                    stored = binding.default
+                end
+
+                -- Transform if provided
+                if transform then
+                    stored = transform(stored)
+                end
+
+                -- Apply to element (use SetValue if available)
+                if element.SetValue then
+                    pcall(function() element.SetValue(stored) end)
+                end
+            elseif binding.default ~= nil then
+                -- No stored value, use default
+                if element.SetValue then
+                    pcall(function() element.SetValue(binding.default) end)
+                end
+            end
+        end
+
+        self._loaded = true
+        return true
+    end
+
+    -- Save config to file
+    function Config:Save()
+        if not self:_canUseFiles() then return false end
+
+        -- Collect current values from bindings
+        for key, binding in pairs(self._bindings) do
+            if not self._excluded[key] and binding.element.GetValue then
+                local ok, val = pcall(function() return binding.element.GetValue() end)
+                if ok then
+                    self._data[key] = val
+                end
+            end
+        end
+
+        -- Build saveable copy (exclude excluded keys)
+        local toSave = {}
+        for key, value in pairs(self._data) do
+            if not self._excluded[key] then
+                toSave[key] = self:_serialize(value)
+            end
+        end
+
+        local ok, encoded = pcall(HttpService.JSONEncode, HttpService, toSave)
+        if not ok then return false end
+
+        return FileWrite(self._path, encoded)
+    end
+
+    -- Reset to defaults (clear file and memory)
+    function Config:Reset()
+        self._data = {}
+        if self:_canUseFiles() and FileExists(self._path) then
+            pcall(function() writefile(self._path, "{}") end)
+        end
+
+        -- Reset elements to defaults
+        for key, binding in pairs(self._bindings) do
+            if binding.default ~= nil and binding.element.SetValue then
+                pcall(function() binding.element.SetValue(binding.default) end)
+            end
+        end
+    end
+
+    -- Export config as JSON string
+    function Config:Export()
+        -- Refresh from current element values
+        for key, binding in pairs(self._bindings) do
+            if not self._excluded[key] and binding.element.GetValue then
+                local ok, val = pcall(function() return binding.element.GetValue() end)
+                if ok then
+                    self._data[key] = val
+                end
+            end
+        end
+
+        local toExport = {}
+        for key, value in pairs(self._data) do
+            if not self._excluded[key] then
+                toExport[key] = self:_serialize(value)
+            end
+        end
+
+        local ok, encoded = pcall(HttpService.JSONEncode, HttpService, toExport)
+        return ok and encoded or nil
+    end
+
+    -- Import config from JSON string
+    function Config:Import(jsonString)
+        local ok, decoded = pcall(HttpService.JSONDecode, HttpService, jsonString)
+        if not ok or type(decoded) ~= "table" then return false end
+
+        -- Merge imported data
+        for key, value in pairs(decoded) do
+            if not self._excluded[key] then
+                self._data[key] = self:_deserialize(value)
+            end
+        end
+
+        -- Apply to elements
+        for key, binding in pairs(self._bindings) do
+            local stored = self._data[key]
+            if stored ~= nil and binding.element.SetValue then
+                pcall(function() binding.element.SetValue(stored) end)
+            end
+        end
+
+        if self._autoSave then
+            self:Save()
+        end
+
+        return true
+    end
+
+    -- Register an element for auto-save/load
+    function Config:Register(key, element, options)
+        options = options or {}
+        self._bindings[key] = {
+            element = element,
+            default = options.Default,
+            validate = options.Validate,
+            transform = options.Transform,
+        }
+
+        -- If we have stored data, apply it now
+        if self._data[key] ~= nil then
+            local stored = self._data[key]
+            if options.Transform then
+                stored = options.Transform(stored)
+            end
+            if not options.Validate or options.Validate(stored) then
+                if element.SetValue then
+                    pcall(function() element.SetValue(stored) end)
+                end
+            end
+        elseif options.Default ~= nil then
+            if element.SetValue then
+                pcall(function() element.SetValue(options.Default) end)
+            end
+        end
+
+        -- Auto-save on change
+        if self._autoSave and element.OnChanged then
+            element.OnChanged:Connect(function(newVal)
+                if not self._excluded[key] then
+                    self._data[key] = newVal
+                    self:Save()
+                    GetSignal(key):Fire(newVal)
+                end
+            end)
+        end
+
+        return self
+    end
+
+    -- Get/set raw values (bypassing elements)
+    function Config:Get(key, default)
+        if self._data[key] ~= nil then
+            return self._data[key]
+        end
+        return default
+    end
+
+    function Config:Set(key, value)
+        if self._excluded[key] then return end
+        self._data[key] = value
+
+        -- Update registered element if exists
+        local binding = self._bindings[key]
+        if binding and binding.element.SetValue then
+            pcall(function() binding.element.SetValue(value) end)
+        end
+
+        GetSignal(key):Fire(value)
+
+        if self._autoSave then
+            self:Save()
+        end
+    end
+
+    -- Subscribe to changes on a specific key
+    function Config:OnChanged(key, callback)
+        return GetSignal(key):Connect(callback)
+    end
+
+    -- Check if key is excluded
+    function Config:IsExcluded(key)
+        return self._excluded[key] == true
+    end
+
+    -- Get config file path
+    function Config:GetPath()
+        return self._path
+    end
+
+    -- Auto-load on creation
+    if autoLoad then
+        Config:Load()
+    end
+
+    return Config
+end
+
+-- Legacy config support (simpler API for basic use)
+function Aurora.ConfigSystem:Save(name, data)
+    local folder = "AuroraConfigs"
+    if type(makefolder) == "function" then
+        makefolder(folder)
+    end
+
+    local path = folder .. "/" .. name .. ".json"
+    local ok, encoded = pcall(HttpService.JSONEncode, HttpService, data)
+    if ok and type(writefile) == "function" then
+        writefile(path, encoded)
+    end
+end
+
+function Aurora.ConfigSystem:Load(name)
+    local path = "AuroraConfigs/" .. name .. ".json"
+    if type(isfile) ~= "function" or not isfile(path) then
+        return nil
+    end
+    if type(readfile) ~= "function" then
+        return nil
+    end
+
+    local ok, content = pcall(readfile, path)
+    if not ok then return nil end
+
+    local decoded = pcall(function()
+        return HttpService:JSONDecode(content)
+    end)
+    return decoded
 end
 
 return Aurora
