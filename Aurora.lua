@@ -36,12 +36,6 @@ Aurora.Config = {
     FontMedium = Enum.Font.GothamMedium,
     CornerRadius       = UDim.new(0, 6),
     ShadowTransparency = 0.7,
-    Storage = {
-        Enabled = false,              -- Master toggle for config system
-        Folder = "AuroraConfigs",     -- Base folder for config files
-        AutoSave = true,              -- Save on every value change
-        Debounce = 0.5,               -- Seconds to debounce rapid changes
-    },
 }
 
 -- ─────────────────────────────────────────────
@@ -168,81 +162,6 @@ local function MakeDraggable(frame, handle)
 
     return conns   -- array of RBXScriptConnections, same type as everything else
 end
-
--- ─────────────────────────────────────────────
---  Config Persistence System
--- ─────────────────────────────────────────────
-
-local HttpService = game:GetService("HttpService")
-
--- Config registry: Window -> { elements, configKey, autoSaveEnabled, ... }
-local _configRegistry = setmetatable({}, { __mode = "k" })
-
-local function SerializeValue(val)
-    local t = typeof(val)
-    if t == "Color3" then
-        return { __type = "Color3", r = val.R, g = val.G, b = val.B }
-    elseif t == "UDim2" then
-        return { __type = "UDim2", xs = val.X.Scale, xo = val.X.Offset, ys = val.Y.Scale, yo = val.Y.Offset }
-    elseif t == "UDim" then
-        return { __type = "UDim", s = val.Scale, o = val.Offset }
-    elseif t == "Vector2" then
-        return { __type = "Vector2", x = val.X, y = val.Y }
-    elseif t == "Vector3" then
-        return { __type = "Vector3", x = val.X, y = val.Y, z = val.Z }
-    elseif t == "EnumItem" then
-        return { __type = "Enum", enum = tostring(val.EnumType), value = val.Value }
-    elseif t == "Instance" then
-        return nil
-    elseif t == "function" then
-        return nil
-    else
-        return val
-    end
-end
-
-local function DeserializeValue(val)
-    if type(val) ~= "table" or not val.__type then
-        return val
-    end
-    local t = val.__type
-    if t == "Color3" then
-        return Color3.new(val.r, val.g, val.b)
-    elseif t == "UDim2" then
-        return UDim2.new(val.xs, val.xo, val.ys, val.yo)
-    elseif t == "UDim" then
-        return UDim.new(val.s, val.o)
-    elseif t == "Vector2" then
-        return Vector2.new(val.x, val.y)
-    elseif t == "Vector3" then
-        return Vector3.new(val.x, val.y, val.z)
-    elseif t == "Enum" then
-        local ok, enumType = pcall(function() return Enum[val.enum] end)
-        if ok and enumType then
-            for _, item in ipairs(enumType:GetEnumItems()) do
-                if item.Value == val.value then return item end
-            end
-        end
-        return val.value
-    end
-    return val
-end
-
-local function SafeWriteFile(path, content)
-    local folder = path:match("^(.*)/") or ""
-    if folder ~= "" and not isfolder(folder) then
-        makefolder(folder)
-    end
-    writefile(path, content)
-end
-
-local function SafeReadFile(path)
-    if not isfile(path) then return nil end
-    return readfile(path)
-end
-
--- Element counter for unique IDs
-local elementCounter = 0
 
 -- ─────────────────────────────────────────────
 --  Dropdown collapse registry
@@ -374,7 +293,7 @@ function Aurora:CreateWindow(config)
             Size     = UDim2.new(0, 0, 0, 0),
             Position = UDim2.new(0, cx, 0, cy),
         }, 0.3)
-        wait(0.3)
+        task.wait(0.3)
         for _, c in ipairs(windowConnections) do
             if c and c.Disconnect then c:Disconnect() end
         end
@@ -468,184 +387,6 @@ function Aurora:CreateWindow(config)
             if c and c.Disconnect then c:Disconnect() end
         end
         ScreenGui:Destroy()
-    end
-
-    -- ─────────────────────────────────────────
-    --  Config Persistence API
-    -- ─────────────────────────────────────────
-
-    -- Element registry for this window
-    local elementRegistry = {}  -- configId -> { element, type, tabName, persist }
-    local configKey = nil
-    local autoSaveEnabled = false
-    local saveDebounce = nil
-    local saveConns = {}  -- Connections for auto-save
-
-    function Window:SetConfigFolder(folderPath)
-        Aurora.Config.Storage.Folder = folderPath
-        return self
-    end
-
-    function Window:EnableAutoSave(cfg)
-        cfg = cfg or {}
-        configKey = cfg.Key or "default"
-        autoSaveEnabled = cfg.AutoSave ~= false
-        local exclude = cfg.Exclude or {}
-        local excludeMap = {}
-        for _, id in ipairs(exclude) do excludeMap[id] = true end
-
-        -- Load existing config
-        local loaded = self:LoadConfig(configKey)
-
-        -- Wire up auto-save listeners
-        if autoSaveEnabled then
-            for id, data in pairs(elementRegistry) do
-                if not excludeMap[id] and data.persist ~= false then
-                    local el = data.element
-                    if el.OnChanged then
-                        local conn
-                        el.OnChanged:Connect(function()
-                            if saveDebounce then
-                                saveDebounce:Disconnect()
-                            end
-                            saveDebounce = delay(Aurora.Config.Storage.Debounce, function()
-                                if autoSaveEnabled and configKey then
-                                    self:SaveConfig(configKey)
-                                end
-                            end)
-                        end)
-                        table.insert(saveConns, conn)
-                    end
-                end
-            end
-        end
-
-        return loaded
-    end
-
-    function Window:SaveConfig(key)
-        key = key or configKey or "default"
-        if not key then
-            warn("[Aurora Config] No key specified for SaveConfig")
-            return false
-        end
-
-        local data = {}
-        for id, reg in pairs(elementRegistry) do
-            if reg.persist ~= false then
-                local el = reg.element
-                if el.GetValue then
-                    local ok, val = pcall(function() return el.GetValue() end)
-                    if ok then
-                        local serialized = SerializeValue(val)
-                        if serialized ~= nil then
-                            data[id] = {
-                                type = reg.type,
-                                tab = reg.tabName,
-                                value = serialized
-                            }
-                        end
-                    end
-                end
-            end
-        end
-
-        local json = HttpService:JSONEncode(data)
-        local path = Aurora.Config.Storage.Folder .. "/" .. key .. ".json"
-
-        local ok, err = pcall(function()
-            SafeWriteFile(path, json)
-        end)
-
-        if not ok then
-            warn("[Aurora Config] Failed to save: " .. tostring(err))
-            return false
-        end
-
-        return true
-    end
-
-    function Window:LoadConfig(key)
-        key = key or configKey
-        if not key then
-            warn("[Aurora Config] No key specified for LoadConfig")
-            return false
-        end
-
-        local path = Aurora.Config.Storage.Folder .. "/" .. key .. ".json"
-        local content = SafeReadFile(path)
-
-        if not content then
-            return false
-        end
-
-        local ok, data = pcall(function()
-            return HttpService:JSONDecode(content)
-        end)
-
-        if not ok or type(data) ~= "table" then
-            warn("[Aurora Config] Failed to parse config: " .. tostring(data))
-            return false
-        end
-
-        -- Restore values
-        for id, saved in pairs(data) do
-            local reg = elementRegistry[id]
-            if reg and reg.element.SetValue then
-                local deserialized = DeserializeValue(saved.value)
-                pcall(function()
-                    reg.element.SetValue(reg.element, deserialized, true)
-                end)
-            end
-        end
-
-        -- Fire loaded event
-        if self.OnConfigLoaded then
-            self.OnConfigLoaded:Fire(key, data)
-        end
-
-        return true
-    end
-
-    function Window:DeleteConfig(key)
-        key = key or configKey
-        if not key then return false end
-
-        local path = Aurora.Config.Storage.Folder .. "/" .. key .. ".json"
-        if isfile(path) then
-            delfile(path)
-            return true
-        end
-        return false
-    end
-
-    function Window:ListConfigs()
-        local folder = Aurora.Config.Storage.Folder
-        if not isfolder(folder) then
-            return {}
-        end
-
-        local files = listfiles(folder)
-        local configs = {}
-        for _, path in ipairs(files) do
-            local name = path:match("([^/]+)%.json$")
-            if name then
-                table.insert(configs, name)
-            end
-        end
-        return configs
-    end
-
-    -- Signal for config loaded event
-    Window.OnConfigLoaded = Signal.new()
-
-    -- Clean up save connections on destroy
-    local originalDestroy = Window.Destroy
-    Window.Destroy = function(self)
-        for _, c in ipairs(saveConns) do
-            if c and c.Disconnect then c:Disconnect() end
-        end
-        originalDestroy(self)
     end
 
     -- ─────────────────────────────────────────
@@ -788,26 +529,10 @@ function Aurora:CreateWindow(config)
         -- ownedConns: UIS connections that belong exclusively to this element.
         -- Added to windowConnections for Window:Destroy() cleanup, AND
         -- disconnected + pruned immediately when element.Destroy() is called.
-        local function RegisterElement(element, frame, ownedConns, elementType, persist)
+        local function RegisterElement(element, frame, ownedConns)
             ownedConns = ownedConns or {}
             for _, c in ipairs(ownedConns) do
                 table.insert(windowConnections, c)
-            end
-
-            -- Generate unique config ID
-            elementCounter = elementCounter + 1
-            local configId = element.ConfigId or element._configId or (cfg and cfg.ConfigId) or (cfg and cfg.Text) or ("Element_" .. elementCounter)
-            element.ConfigId = configId
-            element._configId = configId
-            
-            -- Store in registry for config persistence
-            if configId then
-                elementRegistry[configId] = {
-                    element = element,
-                    type = elementType or "unknown",
-                    tabName = tabName,
-                    persist = persist
-                }
             end
 
             if #Tab.Elements == 0 then
@@ -817,10 +542,6 @@ function Aurora:CreateWindow(config)
             Tab.OnElementAdded:Fire(element)
 
             element.Destroy = function()
-                -- Remove from config registry
-                if configId then
-                    elementRegistry[configId] = nil
-                end
                 for _, c in ipairs(ownedConns) do
                     if c and c.Disconnect then c:Disconnect() end
                     for i, wc in ipairs(windowConnections) do
@@ -990,7 +711,7 @@ function Aurora:CreateWindow(config)
                         Refresh(false)
                     end
                 end,
-            }, frame, nil, "Toggle", cfg.Persist)
+            }, frame)
         end
 
         -- ── Slider ────────────────────────────
@@ -1010,7 +731,7 @@ function Aurora:CreateWindow(config)
                 Size               = UDim2.new(1, -60, 0, 16),
                 BackgroundTransparency = 1,
                 Text               = cfg.Text or "Slider",
-                TextColor3         = Aurora.Config.Theme.TextMuted,
+                TextColor3         = Aurora.Config.Theme.Text,
                 Font               = Aurora.Config.FontMedium,
                 TextSize           = 14,
                 TextXAlignment     = Enum.TextXAlignment.Left,
@@ -1101,7 +822,7 @@ function Aurora:CreateWindow(config)
                     Knob.Position   = UDim2.new(f, -6, 0.5, -6)
                     ValueLabel.Text = tostring(val)
                 end,
-            }, frame, { c3, c4 }, "Slider", cfg.Persist)
+            }, frame, { c3, c4 })
         end
 
         function Tab:CreateDropdown(cfg)
@@ -1213,7 +934,7 @@ function Aurora:CreateWindow(config)
                         Label.Text = (cfg.Text or "Dropdown") .. ": " .. val
                     end
                 end,
-            }, DropdownFrame, nil, "Dropdown", cfg.Persist)
+            }, DropdownFrame)
         end
 
         -- ── SearchDropdown ────────────────────
@@ -1388,7 +1109,7 @@ function Aurora:CreateWindow(config)
                         HeaderLabel.Text = labelText .. ": " .. val
                     end
                 end,
-            }, DropFrame, nil, "SearchDropdown", cfg.Persist)
+            }, DropFrame)
         end
 
         function Tab:CreateMultiSelect(cfg)
@@ -1578,7 +1299,7 @@ function Aurora:CreateWindow(config)
                     end
                 end,
                 IsSelected = function(opt) return selected[opt] == true end,
-            }, MultiFrame, nil, "MultiSelect", cfg.Persist)
+            }, MultiFrame)
         end
 
         function Tab:CreateInput(cfg)
@@ -1632,7 +1353,7 @@ function Aurora:CreateWindow(config)
                 OnChanged = OnChanged,
                 GetValue  = function() return InputBox.Text end,
                 SetValue  = function(val) InputBox.Text = val end,
-            }, frame, nil, "Input", cfg.Persist)
+            }, frame)
         end
 
         -- ── NumberInput ───────────────────────
@@ -1735,7 +1456,7 @@ function Aurora:CreateWindow(config)
                 OnChanged = OnChanged,
                 GetValue  = function() return current end,
                 SetValue  = function(val) Commit(val) end,
-            }, frame, nil, "NumberInput", cfg.Persist)
+            }, frame)
         end
 
         function Tab:CreateKeybind(cfg)
@@ -1818,7 +1539,7 @@ function Aurora:CreateWindow(config)
                     current   = key
                     KeyBtn.Text = key == Enum.KeyCode.Unknown and "None" or key.Name
                 end,
-            }, frame, {keyCon and keyCon or nil}, "Keybind", cfg.Persist)
+            }, frame, { cancelCon })
         end
 
         function Tab:CreateColorPicker(cfg)
@@ -2091,7 +1812,7 @@ function Aurora:CreateWindow(config)
                 end
             end)
 
-            -- Register collapse so SetEnabled(false) can close an open picker
+            -- Register collapse so SetEnabled(false) closes an open picker
             _dropdownCollapse[PickerFrame] = function()
                 if expanded then
                     expanded = false
@@ -2104,11 +1825,11 @@ function Aurora:CreateWindow(config)
                 OnChanged = OnChanged,
                 GetValue  = function() return color end,
                 SetValue  = function(c)
-                    color = c
-                    h, s, v = Color3.toHSV(color)
+                    color  = c
+                    h, s, v = Color3.toHSV(c)
                     Commit()
                 end,
-            }, PickerFrame, nil, "ColorPicker", cfg.Persist), { svMove, svEnd, hueMove, hueEnd })
+            }, PickerFrame, { svMove, svEnd, hueMove, hueEnd })
         end
 
         -- ── Label ─────────────────────────────
@@ -2133,7 +1854,8 @@ function Aurora:CreateWindow(config)
                 Frame    = frame,
                 GetValue = function() return lbl.Text end,
                 SetValue = function(t) lbl.Text = tostring(t) end,
-            }, frame, nil, "Label", cfg.Persist)
+                SetText  = function(t) lbl.Text = tostring(t) end,
+            }, frame)
         end
 
         function Tab:CreateSection(sectionText)
@@ -2164,7 +1886,8 @@ function Aurora:CreateWindow(config)
                 Frame    = frame,
                 GetValue = function() return sectionLabel.Text end,
                 SetValue = function(t) sectionLabel.Text = tostring(t):upper() end,
-            }, frame, nil, "Section", cfg.Persist)
+                SetText  = function(t) sectionLabel.Text = tostring(t):upper() end,
+            }, frame)
         end
 
         -- ── ProgressBar ───────────────────────
@@ -2238,7 +1961,7 @@ function Aurora:CreateWindow(config)
                     barColor              = c
                     Fill.BackgroundColor3 = c
                 end,
-            }, frame, nil, "ProgressBar", cfg.Persist)
+            }, frame)
         end
 
         -- ── StatusLabel ───────────────────────
@@ -2301,7 +2024,7 @@ function Aurora:CreateWindow(config)
                 end,
                 SetText   = function(t) Lbl.Text = tostring(t) end,
                 SetType   = ApplyType,
-            }, frame, nil, "StatusLabel", cfg.Persist)
+            }, frame)
         end
 
         -- ── Table ─────────────────────────────
@@ -2562,7 +2285,7 @@ function Aurora:CreateWindow(config)
                 end,
             }
 
-            return RegisterElement(element, TableFrame, nil, "Table", cfg.Persist)
+            return RegisterElement(element, TableFrame)
         end
         if #Window.Tabs == 0 then
             TabButton.BackgroundColor3 = Aurora.Config.Theme.Primary
@@ -2667,9 +2390,9 @@ function Aurora:Notify(cfg)
     Tween(frame,    {Position = UDim2.new(1, NOTIF_X, 1, posY)}, 0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
     Tween(Progress, {Size = UDim2.new(0, 0, 0, 2)}, duration, Enum.EasingStyle.Linear)
 
-    delay(duration, function()
+    task.delay(duration, function()
         Tween(frame, {Position = UDim2.new(1, 20, 1, posY)}, 0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
-        wait(0.35)
+        task.wait(0.35)
         frame:Destroy()
         for i, e in ipairs(notifQueue) do
             if e == entry then table.remove(notifQueue, i) break end
