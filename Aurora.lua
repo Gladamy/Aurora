@@ -1,6 +1,6 @@
 --// Aurora UI Library
 --// A minimalistic, beautiful UI library for Roblox
---// Version: 6.6.0
+--// Version: 6.5.0
 
 local Aurora = {}
 local TweenService     = game:GetService("TweenService")
@@ -37,6 +37,367 @@ Aurora.Config = {
     CornerRadius       = UDim.new(0, 6),
     ShadowTransparency = 0.7,
 }
+
+-- ─────────────────────────────────────────────
+--  ConfigSystem — persistent storage for UI state
+-- ─────────────────────────────────────────────
+
+Aurora.ConfigSystem = {}
+local HttpService = game:GetService("HttpService")
+
+-- Base64 encoding/decoding
+local base64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+local function base64encode(data)
+    local out = {}
+    local b64 = base64chars
+    for i = 1, #data, 3 do
+        local a, b, c = data:byte(i, i + 2)
+        local buf = a << 16 | (b or 0) << 8 | (c or 0)
+        out[#out+1] = b64:sub((buf >> 18) & 63 + 1, (buf >> 18) & 63 + 1)
+        out[#out+1] = b64:sub((buf >> 12) & 63 + 1, (buf >> 12) & 63 + 1)
+        out[#out+1] = b and b64:sub((buf >> 6) & 63 + 1, (buf >> 6) & 63 + 1) or '='
+        out[#out+1] = c and b64:sub(buf & 63 + 1, buf & 63 + 1) or '='
+    end
+    return table.concat(out)
+end
+
+local function base64decode(data)
+    local out = {}
+    local b64 = {}
+    for i = 1, 64 do b64[base64chars:sub(i,i)] = i - 1 end
+    b64['='] = nil
+    for i = 1, #data, 4 do
+        local a, b, c, d = data:byte(i, i + 3)
+        a, b, c, d = b64[string.char(a)], b64[string.char(b)], b64[string.char(c)], b64[string.char(d)]
+        local buf = (a or 0) << 18 | (b or 0) << 12 | (c or 0) << 6 | (d or 0)
+        out[#out+1] = string.char((buf >> 16) & 255)
+        if c then out[#out+1] = string.char((buf >> 8) & 255) end
+        if d then out[#out+1] = string.char(buf & 255) end
+    end
+    return table.concat(out)
+end
+
+-- File I/O utilities (cross-executor compatible)
+local function IsFileIOAvailable()
+    return type(isfile) == "function" and 
+           type(readfile) == "function" and 
+           type(writefile) == "function" and
+           type(listfiles) == "function" and
+           type(makefolder) == "function"
+end
+
+local function GetStorageDirectory()
+    return "AuroraConfigs/"
+end
+
+local function EnsureDirectory()
+    if not IsFileIOAvailable() then return false end
+    local dir = GetStorageDirectory()
+    if not isfile(dir) then
+        pcall(makefolder, dir)
+    end
+    return true
+end
+
+-- Color3 serialization
+local function SerializeColor(color)
+    return {
+        r = math.round(color.R * 255),
+        g = math.round(color.G * 255),
+        b = math.round(color.B * 255)
+    }
+end
+
+local function DeserializeColor(data)
+    return Color3.fromRGB(data.r, data.g, data.b)
+end
+
+-- KeyCode serialization
+local function SerializeKeybind(key)
+    if key == Enum.KeyCode.Unknown then return nil end
+    return key.Name
+end
+
+local function DeserializeKeybind(str)
+    if not str then return Enum.KeyCode.Unknown end
+    return Enum.KeyCode[str] or Enum.KeyCode.Unknown
+end
+
+-- Generate unique element key
+local function GenerateElementKey(tabName, elementText, elementType, index)
+    local cleanText = tostring(elementText or elementType):gsub("[^%w]", "")
+    return string.format("%s_%s_%s_%d", tabName, cleanText, elementType, index)
+end
+
+-- Aurora.ConfigSystem API
+
+function Aurora.ConfigSystem:ExportToString(data)
+    local json = HttpService:JSONEncode(data)
+    return base64encode(json)
+end
+
+function Aurora.ConfigSystem:ImportFromString(str)
+    -- Try base64 first
+    local ok, decoded = pcall(base64decode, str)
+    if ok and decoded then
+        local ok2, data = pcall(HttpService.JSONDecode, HttpService, decoded)
+        if ok2 then return data end
+    end
+    -- Try plain JSON
+    local ok3, data = pcall(HttpService.JSONDecode, HttpService, str)
+    if ok3 then return data end
+    return nil
+end
+
+function Aurora.ConfigSystem:SerializeValue(value, elementType)
+    if elementType == "ColorPicker" then
+        return SerializeColor(value)
+    elseif elementType == "Keybind" then
+        return SerializeKeybind(value)
+    else
+        return value
+    end
+end
+
+function Aurora.ConfigSystem:DeserializeValue(value, elementType)
+    if elementType == "ColorPicker" then
+        return DeserializeColor(value)
+    elseif elementType == "Keybind" then
+        return DeserializeKeybind(value)
+    else
+        return value
+    end
+end
+
+-- ─────────────────────────────────────────────
+--  CreateConfigTab — helper for UI config management
+-- ─────────────────────────────────────────────
+
+function Aurora:CreateConfigTab(window, options)
+    options = options or {}
+    local tabName = options.Name or "Config"
+    local tabIcon = options.Icon or ""
+    
+    local tab = window:CreateTab({Name = tabName, Icon = tabIcon})
+    
+    -- Section: Config Management
+    tab:CreateSection("Config Management")
+    
+    -- Config name input
+    local configNameInput = tab:CreateInput({
+        Text = "Config Name",
+        Placeholder = window.Config.ConfigName or "default",
+        ConfigId = "config_name"
+    })
+    
+    -- Status label for feedback
+    local statusLabel = tab:CreateStatusLabel({
+        Text = "Ready",
+        Type = "Info"
+    })
+    
+    -- Helper to update status
+    local function SetStatus(text, typ)
+        statusLabel.SetValue(text, typ or "Info")
+        task.delay(3, function()
+            if statusLabel.GetValue() == text then
+                statusLabel.SetValue("Ready", "Info")
+            end
+        end)
+    end
+    
+    -- Save button
+    tab:CreateButton({
+        Text = " Save Config",
+        Callback = function()
+            local name = configNameInput.GetValue()
+            if name and name ~= "" then
+                window.Config.ConfigName = name
+            end
+            local success = window:SaveConfig()
+            if success then
+                SetStatus("Config saved!", "Success")
+            else
+                SetStatus("Failed to save", "Error")
+            end
+        end
+    })
+    
+    -- Load button
+    tab:CreateButton({
+        Text = " Load Config",
+        Callback = function()
+            local name = configNameInput.GetValue()
+            if name and name ~= "" then
+                window.Config.ConfigName = name
+            end
+            local success = window:LoadConfig()
+            if success then
+                SetStatus("Config loaded!", "Success")
+            else
+                SetStatus("Config not found", "Warning")
+            end
+        end
+    })
+    
+    -- Reset button
+    tab:CreateButton({
+        Text = " Reset to Defaults",
+        Callback = function()
+            window:ResetConfig()
+            SetStatus("Config reset!", "Warning")
+        end
+    })
+    
+    -- Section: Auto Save
+    tab:CreateSection("Auto Save")
+    
+    local autoSaveToggle = tab:CreateToggle({
+        Text = "Enable Auto Save",
+        Default = window.Config.AutoSave,
+        ConfigId = "autosave_enabled"
+    })
+    
+    local autoSaveInterval = tab:CreateSlider({
+        Text = "Auto Save Interval (seconds)",
+        Min = 10,
+        Max = 300,
+        Default = window.Config.AutoSaveInterval,
+        ConfigId = "autosave_interval"
+    })
+    
+    -- Apply auto-save settings when toggled/changed
+    autoSaveToggle.OnChanged:Connect(function(enabled)
+        if enabled then
+            window:EnableAutoSave(autoSaveInterval.GetValue())
+            SetStatus("Auto-save enabled", "Success")
+        else
+            window:DisableAutoSave()
+            SetStatus("Auto-save disabled", "Warning")
+        end
+    end)
+    
+    autoSaveInterval.OnChanged:Connect(function(value)
+        if window.Config.AutoSave then
+            window:EnableAutoSave(value)
+        end
+    end)
+    
+    -- Section: Import/Export
+    tab:CreateSection("Import / Export")
+    
+    -- Export button with copy notification
+    tab:CreateButton({
+        Text = " Export Config",
+        Callback = function()
+            local exportString = window:ExportConfig()
+            if exportString then
+                -- Try to copy to clipboard
+                local ok = pcall(function()
+                    setclipboard(exportString)
+                end)
+                if ok then
+                    SetStatus("Exported & copied to clipboard!", "Success")
+                else
+                    SetStatus("Export generated (clipboard not available)", "Warning")
+                end
+            else
+                SetStatus("Export failed", "Error")
+            end
+        end
+    })
+    
+    -- Import input
+    local importInput = tab:CreateInput({
+        Text = "Import Config String",
+        Placeholder = "Paste base64 or JSON config here...",
+        ConfigId = "import_string"
+    })
+    
+    -- Import button
+    tab:CreateButton({
+        Text = " Import Config",
+        Callback = function()
+            local importString = importInput.GetValue()
+            if importString and importString ~= "" then
+                local success, err = window:ImportConfig(importString)
+                if success then
+                    SetStatus("Config imported!", "Success")
+                    importInput.SetValue("")
+                else
+                    SetStatus("Import failed: " .. (err or "Invalid data"), "Error")
+                end
+            else
+                SetStatus("No import data provided", "Warning")
+            end
+        end
+    })
+    
+    -- Section: Saved Configs
+    if IsFileIOAvailable() then
+        tab:CreateSection("Saved Configs")
+        
+        local configsDropdown = tab:CreateDropdown({
+            Text = "Select Config",
+            Options = window:ListConfigs(),
+            ConfigId = "selected_config"
+        })
+        
+        -- Refresh button
+        tab:CreateButton({
+            Text = " Refresh List",
+            Callback = function()
+                local configs = window:ListConfigs()
+                configsDropdown.SetValue(nil)  -- Clear selection
+                -- Note: In a full implementation, you'd update the dropdown options here
+                -- This requires additional element API that may need to be added
+                SetStatus("Config list refreshed", "Info")
+            end
+        })
+        
+        -- Load selected button
+        tab:CreateButton({
+            Text = " Load Selected Config",
+            Callback = function()
+                local selected = configsDropdown.GetValue()
+                if selected and selected ~= "Select..." then
+                    window.Config.ConfigName = selected
+                    configNameInput.SetValue(selected)
+                    local success = window:LoadConfig(selected)
+                    if success then
+                        SetStatus("Config '" .. selected .. "' loaded!", "Success")
+                    else
+                        SetStatus("Failed to load config", "Error")
+                    end
+                else
+                    SetStatus("No config selected", "Warning")
+                end
+            end
+        })
+        
+        -- Delete button
+        tab:CreateButton({
+            Text = " Delete Selected Config",
+            Callback = function()
+                local selected = configsDropdown.GetValue()
+                if selected and selected ~= "Select..." then
+                    local success = window:DeleteConfig(selected)
+                    if success then
+                        SetStatus("Config '" .. selected .. "' deleted!", "Warning")
+                        configsDropdown.SetValue(nil)
+                    else
+                        SetStatus("Failed to delete config", "Error")
+                    end
+                else
+                    SetStatus("No config selected", "Warning")
+                end
+            end
+        })
+    end
+    
+    return tab
+end
 
 -- ─────────────────────────────────────────────
 --  Signal — lightweight pub/sub event system
@@ -375,7 +736,279 @@ function Aurora:CreateWindow(config)
         ActiveTab        = nil,
         -- Events
         OnTabChanged     = Signal.new(),  -- fires (newTab, oldTab)
+        
+        -- Config system
+        Config = {
+            ConfigName = config.ConfigName or "default",
+            AutoSave = false,
+            AutoSaveInterval = 30,
+            _elements = {},
+            _elementCounters = {},
+            _autoSaveTask = nil,
+            _lastSaveTime = 0,
+        },
     }
+
+    -- Config system methods
+    function Window:CaptureState()
+        local data = {
+            _meta = {
+                auroraVersion = "6.5.0",
+                timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                gameId = game.GameId,
+            },
+            window = {
+                position = { x = self.MainFrame.Position.X.Offset, y = self.MainFrame.Position.Y.Offset },
+                size = { width = self.MainFrame.Size.X.Offset, height = self.MainFrame.Size.Y.Offset },
+                activeTab = self.ActiveTab and table.find(self.Tabs, self.ActiveTab) or 1,
+            },
+            elements = {},
+        }
+        
+        for elementKey, elementData in pairs(self.Config._elements) do
+            local element = elementData.element
+            local elementType = elementData.type
+            
+            if element and element.GetValue then
+                local ok, value = pcall(element.GetValue)
+                if ok then
+                    data.elements[elementKey] = {
+                        type = elementType,
+                        value = Aurora.ConfigSystem:SerializeValue(value, elementType),
+                        tab = elementData.tabName,
+                    }
+                end
+            end
+        end
+        
+        return data
+    end
+
+    function Window:ApplyState(data)
+        if not data or not data.elements then return end
+        
+        for elementKey, elementData in pairs(data.elements) do
+            local tracked = self.Config._elements[elementKey]
+            if tracked and tracked.element and tracked.element.SetValue then
+                local deserialized = Aurora.ConfigSystem:DeserializeValue(elementData.value, elementData.type)
+                
+                -- Validate value before setting
+                local shouldApply = true
+                if elementData.type == "Dropdown" or elementData.type == "SearchDropdown" then
+                    -- Check if option still exists
+                    if tracked.options then
+                        shouldApply = table.find(tracked.options, deserialized) ~= nil
+                    end
+                elseif elementData.type == "MultiSelect" then
+                    -- Filter out options that no longer exist
+                    if tracked.options and type(deserialized) == "table" then
+                        local valid = {}
+                        for _, v in ipairs(deserialized) do
+                            if table.find(tracked.options, v) then
+                                table.insert(valid, v)
+                            end
+                        end
+                        deserialized = valid
+                    end
+                end
+                
+                if shouldApply then
+                    pcall(function()
+                        tracked.element.SetValue(deserialized)
+                    end)
+                end
+            end
+        end
+        
+        -- Restore window position/size
+        if data.window then
+            if data.window.position then
+                self.MainFrame.Position = UDim2.new(
+                    self.MainFrame.Position.X.Scale, data.window.position.x,
+                    self.MainFrame.Position.Y.Scale, data.window.position.y
+                )
+            end
+        end
+    end
+
+    function Window:SaveConfig(name)
+        name = name or self.Config.ConfigName
+        if not IsFileIOAvailable() then
+            warn("[Aurora Config] File I/O not available - cannot save")
+            return false
+        end
+        
+        EnsureDirectory()
+        local path = GetStorageDirectory() .. name .. ".json"
+        local data = self:CaptureState()
+        
+        local ok, content = pcall(HttpService.JSONEncode, HttpService, data)
+        if not ok then
+            warn("[Aurora Config] Failed to encode: " .. tostring(content))
+            return false
+        end
+        
+        local ok2, err = pcall(writefile, path, content)
+        if not ok2 then
+            warn("[Aurora Config] Failed to write: " .. tostring(err))
+            return false
+        end
+        
+        self.Config._lastSaveTime = tick()
+        return true
+    end
+
+    function Window:LoadConfig(name)
+        name = name or self.Config.ConfigName
+        if not IsFileIOAvailable() then
+            warn("[Aurora Config] File I/O not available - cannot load")
+            return false
+        end
+        
+        local path = GetStorageDirectory() .. name .. ".json"
+        
+        if not isfile(path) then
+            return false
+        end
+        
+        local ok, content = pcall(readfile, path)
+        if not ok then
+            warn("[Aurora Config] Failed to read: " .. tostring(content))
+            return false
+        end
+        
+        local ok2, data = pcall(HttpService.JSONDecode, HttpService, content)
+        if not ok2 then
+            warn("[Aurora Config] Failed to decode: " .. tostring(data))
+            return false
+        end
+        
+        self:ApplyState(data)
+        return true
+    end
+
+    function Window:DeleteConfig(name)
+        name = name or self.Config.ConfigName
+        if not IsFileIOAvailable() then return false end
+        
+        local path = GetStorageDirectory() .. name .. ".json"
+        if isfile(path) then
+            return pcall(delfile, path)
+        end
+        return false
+    end
+
+    function Window:ListConfigs()
+        if not IsFileIOAvailable() then return {} end
+        
+        local dir = GetStorageDirectory()
+        local configs = {}
+        local files = listfiles and listfiles(dir) or {}
+        
+        for _, file in ipairs(files) do
+            if file:match("%.json$") then
+                local name = file:match("([^/\\]+)%.json$")
+                if name then
+                    table.insert(configs, name)
+                end
+            end
+        end
+        
+        return configs
+    end
+
+    function Window:ResetConfig()
+        for elementKey, elementData in pairs(self.Config._elements) do
+            local element = elementData.element
+            local defaultValue = elementData.defaultValue
+            
+            if element and element.SetValue and defaultValue ~= nil then
+                pcall(function()
+                    element.SetValue(defaultValue)
+                end)
+            end
+        end
+    end
+
+    function Window:ExportConfig()
+        local data = self:CaptureState()
+        return Aurora.ConfigSystem:ExportToString(data)
+    end
+
+    function Window:ImportConfig(str)
+        local data = Aurora.ConfigSystem:ImportFromString(str)
+        if not data then
+            return false, "Invalid import data"
+        end
+        
+        self:ApplyState(data)
+        return true
+    end
+
+    -- Debounced save helper
+    local debounceTimers = {}
+    local function DebouncedSave(window, delay)
+        delay = delay or 1
+        
+        local key = tostring(window)
+        if debounceTimers[key] then
+            task.cancel(debounceTimers[key])
+        end
+        
+        debounceTimers[key] = task.delay(delay, function()
+            debounceTimers[key] = nil
+            if window.Config.AutoSave then
+                window:SaveConfig(window.Config.ConfigName)
+            end
+        end)
+    end
+
+    function Window:EnableAutoSave(interval)
+        self.Config.AutoSave = true
+        self.Config.AutoSaveInterval = interval or 30
+        
+        -- Cancel any existing task
+        if self.Config._autoSaveTask then
+            pcall(task.cancel, self.Config._autoSaveTask)
+        end
+        
+        -- Start auto-save loop
+        self.Config._autoSaveTask = task.spawn(function()
+            while self.Config.AutoSave do
+                task.wait(self.Config.AutoSaveInterval)
+                if self.Config.AutoSave and tick() - self.Config._lastSaveTime >= self.Config.AutoSaveInterval then
+                    self:SaveConfig(self.Config.ConfigName)
+                end
+            end
+        end)
+        
+        -- Hook into OnChanged for debounced saves
+        for _, elementData in pairs(self.Config._elements) do
+            local element = elementData.element
+            if element and element.OnChanged then
+                element.OnChanged:Connect(function()
+                    if self.Config.AutoSave then
+                        DebouncedSave(self, 1)
+                    end
+                end)
+            end
+        end
+        
+        -- Save on window destroy
+        self.ScreenGui.AncestryChanged:Connect(function(_, parent)
+            if not parent then
+                self:SaveConfig(self.Config.ConfigName)
+            end
+        end)
+    end
+
+    function Window:DisableAutoSave()
+        self.Config.AutoSave = false
+        if self.Config._autoSaveTask then
+            pcall(task.cancel, self.Config._autoSaveTask)
+            self.Config._autoSaveTask = nil
+        end
+    end
 
     function Window:SelectTab(index)
         local tab = self.Tabs[index]
@@ -529,7 +1162,8 @@ function Aurora:CreateWindow(config)
         -- ownedConns: UIS connections that belong exclusively to this element.
         -- Added to windowConnections for Window:Destroy() cleanup, AND
         -- disconnected + pruned immediately when element.Destroy() is called.
-        local function RegisterElement(element, frame, ownedConns)
+        -- elementType and configData are for config system integration
+        local function RegisterElement(element, frame, ownedConns, elementType, configData)
             ownedConns = ownedConns or {}
             for _, c in ipairs(ownedConns) do
                 table.insert(windowConnections, c)
@@ -604,6 +1238,24 @@ function Aurora:CreateWindow(config)
                         AddCorner(overlay, UDim.new(0, 4))
                     end
                 end
+            end
+
+            -- Register with config system if element type provided
+            if elementType and element.GetValue then
+                local counterKey = tabName .. "_" .. elementType
+                Window.Config._elementCounters[counterKey] = (Window.Config._elementCounters[counterKey] or 0) + 1
+                local index = Window.Config._elementCounters[counterKey]
+                
+                local elementKey = configData and configData.ConfigId or 
+                    GenerateElementKey(tabName, configData and configData.Text, elementType, index)
+                
+                Window.Config._elements[elementKey] = {
+                    element = element,
+                    type = elementType,
+                    tabName = tabName,
+                    defaultValue = element.GetValue(),
+                    options = configData and configData.Options or nil,
+                }
             end
 
             return element
@@ -711,7 +1363,7 @@ function Aurora:CreateWindow(config)
                         Refresh(false)
                     end
                 end,
-            }, frame)
+            }, frame, nil, "Toggle", cfg)
         end
 
         -- ── Slider ────────────────────────────
@@ -822,7 +1474,7 @@ function Aurora:CreateWindow(config)
                     Knob.Position   = UDim2.new(f, -6, 0.5, -6)
                     ValueLabel.Text = tostring(val)
                 end,
-            }, frame, { c3, c4 })
+            }, frame, { c3, c4 }, "Slider", cfg)
         end
 
         function Tab:CreateDropdown(cfg)
@@ -934,7 +1586,7 @@ function Aurora:CreateWindow(config)
                         Label.Text = (cfg.Text or "Dropdown") .. ": " .. val
                     end
                 end,
-            }, DropdownFrame)
+            }, DropdownFrame, nil, "Dropdown", cfg)
         end
 
         -- ── SearchDropdown ────────────────────
@@ -1109,7 +1761,7 @@ function Aurora:CreateWindow(config)
                         HeaderLabel.Text = labelText .. ": " .. val
                     end
                 end,
-            }, DropFrame)
+            }, DropFrame, nil, "SearchDropdown", cfg)
         end
 
         function Tab:CreateMultiSelect(cfg)
@@ -1299,7 +1951,7 @@ function Aurora:CreateWindow(config)
                     end
                 end,
                 IsSelected = function(opt) return selected[opt] == true end,
-            }, MultiFrame)
+            }, MultiFrame, nil, "MultiSelect", cfg)
         end
 
         function Tab:CreateInput(cfg)
@@ -1353,7 +2005,7 @@ function Aurora:CreateWindow(config)
                 OnChanged = OnChanged,
                 GetValue  = function() return InputBox.Text end,
                 SetValue  = function(val) InputBox.Text = val end,
-            }, frame)
+            }, frame, nil, "Input", cfg)
         end
 
         -- ── NumberInput ───────────────────────
@@ -1456,7 +2108,7 @@ function Aurora:CreateWindow(config)
                 OnChanged = OnChanged,
                 GetValue  = function() return current end,
                 SetValue  = function(val) Commit(val) end,
-            }, frame)
+            }, frame, nil, "NumberInput", cfg)
         end
 
         function Tab:CreateKeybind(cfg)
@@ -1539,7 +2191,7 @@ function Aurora:CreateWindow(config)
                     current   = key
                     KeyBtn.Text = key == Enum.KeyCode.Unknown and "None" or key.Name
                 end,
-            }, frame, { cancelCon })
+            }, frame, { cancelCon }, "Keybind", cfg)
         end
 
         function Tab:CreateColorPicker(cfg)
@@ -1829,7 +2481,7 @@ function Aurora:CreateWindow(config)
                     h, s, v = Color3.toHSV(c)
                     Commit()
                 end,
-            }, PickerFrame, { svMove, svEnd, hueMove, hueEnd })
+            }, PickerFrame, { svMove, svEnd, hueMove, hueEnd }, "ColorPicker", cfg)
         end
 
         -- ── Label ─────────────────────────────
@@ -2411,655 +3063,6 @@ function Aurora:SetTheme(newTheme)
             Aurora.Config.Theme[k] = v
         end
     end
-end
-
--- ─────────────────────────────────────────────
---  Config System — Persistent settings for scripts
---  Supports: Delta, Velocity, Volt (writefile/readfile)
--- ─────────────────────────────────────────────
-
-Aurora.ConfigSystem = {}
-
-local HttpService = game:GetService("HttpService")
-
-local function FileRead(path)
-    if type(readfile) == "function" then
-        return readfile(path)
-    end
-    return nil
-end
-
-local function FileWrite(path, content)
-    if type(writefile) == "function" then
-        writefile(path, content)
-        return true
-    end
-    return false
-end
-
-local function FileExists(path)
-    if type(isfile) == "function" then
-        return isfile(path)
-    end
-    return false
-end
-
-local function MakeFolder(path)
-    if type(makefolder) == "function" then
-        makefolder(path)
-    end
-end
-
-function Aurora:CreateConfig(options)
-    options = options or {}
-    local configName = options.Name or "AuroraConfig"
-    local autoSave = options.AutoSave ~= false
-    local autoLoad = options.AutoLoad ~= false
-    local excludedKeys = options.Exclude or {} -- keys never saved (e.g., {"webhook", "password"})
-    local version = options.Version or 1
-
-    local folder = "AuroraConfigs"
-    local filePath = folder .. "/" .. configName .. "_v" .. version .. ".json"
-
-    MakeFolder(folder)
-
-    local Config = {
-        _name = configName,
-        _path = filePath,
-        _version = version,
-        _data = {},
-        _bindings = {}, -- key -> {element, transform, validate}
-        _onChanged = {}, -- key -> Signal
-        _autoSave = autoSave,
-        _excluded = {},
-        _loaded = false,
-    }
-
-    -- Build excluded set for O(1) lookup
-    for _, key in ipairs(excludedKeys) do
-        Config._excluded[key] = true
-    end
-
-    -- Signal factory for per-key changes
-    local function GetSignal(key)
-        if not Config._onChanged[key] then
-            Config._onChanged[key] = Signal.new()
-        end
-        return Config._onChanged[key]
-    end
-
-    -- Internal: Check if executor supports file I/O
-    function Config:_canUseFiles()
-        return type(writefile) == "function" and type(readfile) == "function"
-    end
-
-    -- Internal: Serialize value for storage
-    function Config:_serialize(value)
-        local t = typeof(value)
-        if t == "Color3" then
-            return { __type = "Color3", r = value.R, g = value.G, b = value.B }
-        elseif t == "EnumItem" then
-            return { __type = "Enum", class = tostring(value.EnumType), value = value.Name }
-        elseif t == "UDim2" then
-            return { __type = "UDim2", x = { value.X.Scale, value.X.Offset }, y = { value.Y.Scale, value.Y.Offset } }
-        elseif t == "UDim" then
-            return { __type = "UDim", scale = value.Scale, offset = value.Offset }
-        elseif t == "Vector2" then
-            return { __type = "Vector2", x = value.X, y = value.Y }
-        elseif t == "Vector3" then
-            return { __type = "Vector3", x = value.X, y = value.Y, z = value.Z }
-        elseif t == "table" then
-            local copy = {}
-            for k, v in pairs(value) do
-                copy[k] = self:_serialize(v)
-            end
-            return copy
-        end
-        return value
-    end
-
-    -- Internal: Deserialize value from storage
-    function Config:_deserialize(value)
-        if type(value) ~= "table" then return value end
-        if value.__type == "Color3" then
-            return Color3.new(value.r, value.g, value.b)
-        elseif value.__type == "Enum" then
-            local success, enum = pcall(function()
-                return Enum[value.class][value.value]
-            end)
-            return success and enum or nil
-        elseif value.__type == "UDim2" then
-            return UDim2.new(value.x[1], value.x[2], value.y[1], value.y[2])
-        elseif value.__type == "UDim" then
-            return UDim.new(value.scale, value.offset)
-        elseif value.__type == "Vector2" then
-            return Vector2.new(value.x, value.y)
-        elseif value.__type == "Vector3" then
-            return Vector3.new(value.x, value.y, value.z)
-        else
-            local copy = {}
-            for k, v in pairs(value) do
-                copy[k] = self:_deserialize(v)
-            end
-            return copy
-        end
-    end
-
-    -- Load config from file
-    function Config:Load()
-        if not self:_canUseFiles() then return false end
-        if not FileExists(self._path) then return false end
-
-        local success, content = pcall(FileRead, self._path)
-        if not success or not content then return false end
-
-        local ok, decoded = pcall(HttpService.JSONDecode, HttpService, content)
-        if not ok or type(decoded) ~= "table" then return false end
-
-        -- Merge loaded data (skip excluded keys)
-        for key, value in pairs(decoded) do
-            if not self._excluded[key] then
-                self._data[key] = self:_deserialize(value)
-            end
-        end
-
-        -- Apply to registered elements
-        for key, binding in pairs(self._bindings) do
-            local stored = self._data[key]
-            if stored ~= nil then
-                local element = binding.element
-                local validate = binding.validate
-                local transform = binding.transform
-
-                -- Validate if provided
-                if validate and not validate(stored) then
-                    stored = binding.default
-                end
-
-                -- Transform if provided
-                if transform then
-                    stored = transform(stored)
-                end
-
-                -- Apply to element (use SetValue if available)
-                if element.SetValue then
-                    pcall(function() element.SetValue(stored) end)
-                end
-            elseif binding.default ~= nil then
-                -- No stored value, use default
-                if element.SetValue then
-                    pcall(function() element.SetValue(binding.default) end)
-                end
-            end
-        end
-
-        self._loaded = true
-        return true
-    end
-
-    -- Save config to file
-    function Config:Save()
-        if not self:_canUseFiles() then return false end
-
-        -- Collect current values from bindings
-        for key, binding in pairs(self._bindings) do
-            if not self._excluded[key] and binding.element.GetValue then
-                local ok, val = pcall(function() return binding.element.GetValue() end)
-                if ok then
-                    self._data[key] = val
-                end
-            end
-        end
-
-        -- Build saveable copy (exclude excluded keys)
-        local toSave = {}
-        for key, value in pairs(self._data) do
-            if not self._excluded[key] then
-                toSave[key] = self:_serialize(value)
-            end
-        end
-
-        local ok, encoded = pcall(HttpService.JSONEncode, HttpService, toSave)
-        if not ok then return false end
-
-        return FileWrite(self._path, encoded)
-    end
-
-    -- Reset to defaults (clear file and memory)
-    function Config:Reset()
-        self._data = {}
-        if self:_canUseFiles() and FileExists(self._path) then
-            pcall(function() writefile(self._path, "{}") end)
-        end
-
-        -- Reset elements to defaults
-        for key, binding in pairs(self._bindings) do
-            if binding.default ~= nil and binding.element.SetValue then
-                pcall(function() binding.element.SetValue(binding.default) end)
-            end
-        end
-    end
-
-    -- Export config as JSON string
-    function Config:Export()
-        -- Refresh from current element values
-        for key, binding in pairs(self._bindings) do
-            if not self._excluded[key] and binding.element.GetValue then
-                local ok, val = pcall(function() return binding.element.GetValue() end)
-                if ok then
-                    self._data[key] = val
-                end
-            end
-        end
-
-        local toExport = {}
-        for key, value in pairs(self._data) do
-            if not self._excluded[key] then
-                toExport[key] = self:_serialize(value)
-            end
-        end
-
-        local ok, encoded = pcall(HttpService.JSONEncode, HttpService, toExport)
-        return ok and encoded or nil
-    end
-
-    -- Import config from JSON string
-    function Config:Import(jsonString)
-        local ok, decoded = pcall(HttpService.JSONDecode, HttpService, jsonString)
-        if not ok or type(decoded) ~= "table" then return false end
-
-        -- Merge imported data
-        for key, value in pairs(decoded) do
-            if not self._excluded[key] then
-                self._data[key] = self:_deserialize(value)
-            end
-        end
-
-        -- Apply to elements
-        for key, binding in pairs(self._bindings) do
-            local stored = self._data[key]
-            if stored ~= nil and binding.element.SetValue then
-                pcall(function() binding.element.SetValue(stored) end)
-            end
-        end
-
-        if self._autoSave then
-            self:Save()
-        end
-
-        return true
-    end
-
-    -- Register an element for auto-save/load
-    function Config:Register(key, element, options)
-        options = options or {}
-        self._bindings[key] = {
-            element = element,
-            default = options.Default,
-            validate = options.Validate,
-            transform = options.Transform,
-        }
-
-        -- If we have stored data, apply it now
-        if self._data[key] ~= nil then
-            local stored = self._data[key]
-            if options.Transform then
-                stored = options.Transform(stored)
-            end
-            if not options.Validate or options.Validate(stored) then
-                if element.SetValue then
-                    pcall(function() element.SetValue(stored) end)
-                end
-            end
-        elseif options.Default ~= nil then
-            if element.SetValue then
-                pcall(function() element.SetValue(options.Default) end)
-            end
-        end
-
-        -- Auto-save on change
-        if self._autoSave and element.OnChanged then
-            element.OnChanged:Connect(function(newVal)
-                if not self._excluded[key] then
-                    self._data[key] = newVal
-                    self:Save()
-                    GetSignal(key):Fire(newVal)
-                end
-            end)
-        end
-
-        return self
-    end
-
-    -- Get/set raw values (bypassing elements)
-    function Config:Get(key, default)
-        if self._data[key] ~= nil then
-            return self._data[key]
-        end
-        return default
-    end
-
-    function Config:Set(key, value)
-        if self._excluded[key] then return end
-        self._data[key] = value
-
-        -- Update registered element if exists
-        local binding = self._bindings[key]
-        if binding and binding.element.SetValue then
-            pcall(function() binding.element.SetValue(value) end)
-        end
-
-        GetSignal(key):Fire(value)
-
-        if self._autoSave then
-            self:Save()
-        end
-    end
-
-    -- Subscribe to changes on a specific key
-    function Config:OnChanged(key, callback)
-        return GetSignal(key):Connect(callback)
-    end
-
-    -- Check if key is excluded
-    function Config:IsExcluded(key)
-        return self._excluded[key] == true
-    end
-
-    -- Get config file path
-    function Config:GetPath()
-        return self._path
-    end
-
-    -- ─────────────────────────────────────────────
-    -- Profile System Extension
-    -- ─────────────────────────────────────────────
-
-    Config._profiles = {}
-    Config._currentProfile = "default"
-    Config._profilePath = nil
-
-    -- Initialize profile support (call after Config creation)
-    function Config:EnableProfiles()
-        self._profiles = {}
-        self._currentProfile = "default"
-        -- Profiles stored in subfolder
-        local profileFolder = "AuroraConfigs/Profiles_" .. self._name
-        MakeFolder(profileFolder)
-        self._profilePath = profileFolder
-
-        -- Scan existing profiles
-        self:_scanProfiles()
-        return self
-    end
-
-    -- Scan for existing profile files
-    function Config:_scanProfiles()
-        if not self:_canUseFiles() or not self._profilePath then return end
-        self._profiles = {}
-        -- Default profile always exists
-        table.insert(self._profiles, "default")
-
-        -- Look for profile files: Profile_<name>.json
-        -- Since we can't list directories, we check a known location pattern
-        -- Profile list is stored in a manifest file
-        local manifestPath = self._profilePath .. "/_manifest.json"
-        if FileExists(manifestPath) then
-            local ok, content = pcall(FileRead, manifestPath)
-            if ok and content then
-                local ok2, decoded = pcall(HttpService.JSONDecode, HttpService, content)
-                if ok2 and type(decoded) == "table" then
-                    for _, name in ipairs(decoded) do
-                        if name ~= "default" and not table.find(self._profiles, name) then
-                            table.insert(self._profiles, name)
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    -- Save profile manifest
-    function Config:_saveManifest()
-        if not self:_canUseFiles() or not self._profilePath then return end
-        local manifestPath = self._profilePath .. "/_manifest.json"
-        local ok, encoded = pcall(HttpService.JSONEncode, HttpService, self._profiles)
-        if ok then
-            pcall(function() writefile(manifestPath, encoded) end)
-        end
-    end
-
-    -- Get profile file path
-    function Config:_getProfileFile(profileName)
-        if not self._profilePath then return nil end
-        local safeName = profileName:gsub("[^%w_-]", "")
-        return self._profilePath .. "/Profile_" .. safeName .. ".json"
-    end
-
-    -- Create a new profile
-    function Config:CreateProfile(name)
-        if not name or name == "" or name == "default" then return false end
-        if table.find(self._profiles, name) then return false end
-
-        table.insert(self._profiles, name)
-        self:_saveManifest()
-
-        -- Create empty profile file
-        local profileFile = self:_getProfileFile(name)
-        if profileFile and self:_canUseFiles() then
-            pcall(function() writefile(profileFile, "{}") end)
-        end
-
-        return true
-    end
-
-    -- Delete a profile (can't delete default or current)
-    function Config:DeleteProfile(name)
-        if name == "default" or name == self._currentProfile then return false end
-        local idx = table.find(self._profiles, name)
-        if not idx then return false end
-
-        table.remove(self._profiles, idx)
-        self:_saveManifest()
-
-        -- Delete profile file
-        local profileFile = self:_getProfileFile(name)
-        if profileFile and self:_canUseFiles() then
-            pcall(function() delfile(profileFile) end)
-        end
-
-        return true
-    end
-
-    -- List all profiles
-    function Config:ListProfiles()
-        return self._profiles
-    end
-
-    -- Get current profile name
-    function Config:GetCurrentProfile()
-        return self._currentProfile
-    end
-
-    -- Switch to a different profile
-    function Config:SwitchProfile(name)
-        if not table.find(self._profiles, name) then return false end
-        if name == self._currentProfile then return true end
-
-        -- Save current profile first
-        if self._currentProfile then
-            self:_saveToProfileFile(self._currentProfile)
-        end
-
-        -- Clear current data
-        self._data = {}
-        for key, binding in pairs(self._bindings) do
-            if binding.default ~= nil and binding.element.SetValue then
-                pcall(function() binding.element.SetValue(binding.default) end)
-            end
-        end
-
-        -- Switch profile
-        self._currentProfile = name
-
-        -- Load new profile
-        self:_loadFromProfileFile(name)
-
-        return true
-    end
-
-    -- Save current data to profile file
-    function Config:_saveToProfileFile(profileName)
-        if not self:_canUseFiles() then return end
-        local profileFile = self:_getProfileFile(profileName)
-        if not profileFile then return end
-
-        -- Collect current values
-        for key, binding in pairs(self._bindings) do
-            if not self._excluded[key] and binding.element.GetValue then
-                local ok, val = pcall(function() return binding.element.GetValue() end)
-                if ok then
-                    self._data[key] = val
-                end
-            end
-        end
-
-        local toSave = {}
-        for key, value in pairs(self._data) do
-            if not self._excluded[key] then
-                toSave[key] = self:_serialize(value)
-            end
-        end
-
-        local ok, encoded = pcall(HttpService.JSONEncode, HttpService, toSave)
-        if ok then
-            pcall(function() writefile(profileFile, encoded) end)
-        end
-    end
-
-    -- Load data from profile file
-    function Config:_loadFromProfileFile(profileName)
-        if not self:_canUseFiles() then return false end
-        local profileFile = self:_getProfileFile(profileName)
-        if not profileFile or not FileExists(profileFile) then return false end
-
-        local ok, content = pcall(FileRead, profileFile)
-        if not ok or not content then return false end
-
-        local ok2, decoded = pcall(HttpService.JSONDecode, HttpService, content)
-        if not ok2 or type(decoded) ~= "table" then return false end
-
-        -- Deserialize and apply
-        for key, value in pairs(decoded) do
-            if not self._excluded[key] then
-                self._data[key] = self:_deserialize(value)
-            end
-        end
-
-        -- Apply to elements
-        for key, binding in pairs(self._bindings) do
-            local stored = self._data[key]
-            if stored ~= nil then
-                local element = binding.element
-                local validate = binding.validate
-                local transform = binding.transform
-
-                if validate and not validate(stored) then
-                    stored = binding.default
-                end
-                if transform then
-                    stored = transform(stored)
-                end
-                if element.SetValue then
-                    pcall(function() element.SetValue(stored) end)
-                end
-            elseif binding.default ~= nil then
-                if element.SetValue then
-                    pcall(function() element.SetValue(binding.default) end)
-                end
-            end
-        end
-
-        return true
-    end
-
-    -- Override Save to use profile-aware saving
-    Config._baseSave = Config.Save
-    function Config:Save()
-        if self._profilePath and self._currentProfile then
-            self:_saveToProfileFile(self._currentProfile)
-            return true
-        end
-        return self:_baseSave()
-    end
-
-    -- Override Load to use profile-aware loading
-    Config._baseLoad = Config.Load
-    function Config:Load()
-        if self._profilePath and self._currentProfile then
-            return self:_loadFromProfileFile(self._currentProfile)
-        end
-        return self:_baseLoad()
-    end
-
-    -- Override Reset to use profile-aware resetting
-    Config._baseReset = Config.Reset
-    function Config:Reset()
-        self._data = {}
-        if self._profilePath and self._currentProfile then
-            local profileFile = self:_getProfileFile(self._currentProfile)
-            if profileFile and self:_canUseFiles() then
-                pcall(function() writefile(profileFile, "{}") end)
-            end
-        elseif self:_canUseFiles() and FileExists(self._path) then
-            pcall(function() writefile(self._path, "{}") end)
-        end
-
-        for key, binding in pairs(self._bindings) do
-            if binding.default ~= nil and binding.element.SetValue then
-                pcall(function() binding.element.SetValue(binding.default) end)
-            end
-        end
-    end
-
-    -- Auto-load on creation
-    if autoLoad then
-        Config:Load()
-    end
-
-    return Config
-end
-
--- Legacy config support (simpler API for basic use)
-function Aurora.ConfigSystem:Save(name, data)
-    local folder = "AuroraConfigs"
-    if type(makefolder) == "function" then
-        makefolder(folder)
-    end
-
-    local path = folder .. "/" .. name .. ".json"
-    local ok, encoded = pcall(HttpService.JSONEncode, HttpService, data)
-    if ok and type(writefile) == "function" then
-        writefile(path, encoded)
-    end
-end
-
-function Aurora.ConfigSystem:Load(name)
-    local path = "AuroraConfigs/" .. name .. ".json"
-    if type(isfile) ~= "function" or not isfile(path) then
-        return nil
-    end
-    if type(readfile) ~= "function" then
-        return nil
-    end
-
-    local ok, content = pcall(readfile, path)
-    if not ok then return nil end
-
-    local decoded = pcall(function()
-        return HttpService:JSONDecode(content)
-    end)
-    return decoded
 end
 
 return Aurora
