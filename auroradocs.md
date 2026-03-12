@@ -1,18 +1,17 @@
 # Aurora UI Library — v7.0 Developer Reference
 
-> A Roblox Lua UI library for building in-game script interfaces.  
-> Single-file distributable · 16 element types · Full config persistence · Zero global pollution
+Aurora is a Roblox Lua UI library for building in-game script interfaces. It provides a tabbed window system, 16 built-in element types, a notification system, and a full configuration persistence layer — all loaded via a single `loadstring` call.
 
 ---
 
 ## Table of Contents
 
-1. [Loading Aurora](#1-loading-aurora)
-2. [Aurora (top-level API)](#2-aurora-top-level-api)
+1. [Getting Started](#1-getting-started)
+2. [Aurora Root API](#2-aurora-root-api)
 3. [Window](#3-window)
 4. [Tab](#4-tab)
-5. [Elements — common API](#5-elements--common-api)
-6. [Elements — reference](#6-elements--reference)
+5. [Elements — Common API](#5-elements--common-api)
+6. [Elements — Reference](#6-elements--reference)
    - [Button](#button)
    - [Toggle](#toggle)
    - [Slider](#slider)
@@ -32,59 +31,83 @@
 7. [Notifications](#7-notifications)
 8. [Themes & Config](#8-themes--config)
 9. [Config System](#9-config-system)
-10. [Signal](#10-signal)
-11. [Internals & Architecture](#11-internals--architecture)
-12. [Build System](#12-build-system)
+10. [Signals](#10-signals)
+11. [ConnSet](#11-connset)
+12. [Architecture & Internals](#12-architecture--internals)
+13. [Advanced: Custom Elements](#12-advanced-custom-elements)
+14. [Building from Source](#14-building-from-source)
+15. [Suggested Improvements](#15-suggested-improvements)
 
 ---
 
-## 1. Loading Aurora
+## 1. Getting Started
+
+### Loading
 
 ```lua
 local Aurora = loadstring(game:HttpGet(
-    "https://raw.githubusercontent.com/YourRepo/Aurora/main/Aurora.lua"
+    "https://raw.githubusercontent.com/Gladamy/Aurora/main/Aurora.lua"
 ))()
 ```
 
-Aurora returns a single table. No globals are set. Everything lives under the returned object.
+### Minimal example
+
+```lua
+local Aurora = loadstring(...)()
+
+local win = Aurora:CreateWindow({ Title = "My Script" })
+local tab = win:CreateTab({ Name = "Main", Icon = "" })
+
+local toggle = tab:CreateToggle({
+    Text     = "God Mode",
+    Default  = false,
+    Callback = function(val)
+        -- val is true or false
+    end,
+})
+
+-- Read value at any time
+print(toggle.GetValue())   -- false
+
+-- Set silently (no callback fires)
+toggle.SetValue(true)
+```
 
 ---
 
-## 2. Aurora (top-level API)
+## 2. Aurora Root API
+
+`Aurora` is the table returned by `loadstring(...)()`. It is the only global surface — everything else hangs off it.
 
 ```lua
-Aurora:CreateWindow(config)   -- creates and opens a new window
-Aurora:Notify(cfg)            -- shared singleton notification
-Aurora:SetTheme(theme)        -- patch theme colours at runtime
-Aurora:CreateConfig(options)  -- create a config persistence object
-Aurora.Config                 -- read-only access to current Config table
+Aurora:CreateWindow(cfg)    -- → Window
+Aurora:CreateConfig(cfg)    -- → ConfigObject
+Aurora:Notify(cfg)          -- show a shared toast notification
+Aurora:SetTheme(tbl)        -- patch theme colours at runtime
+Aurora.Config               -- read-only access to the Config table
 ```
 
-### `Aurora:CreateWindow(config)`
+### `Aurora:CreateWindow(cfg)`
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `Title` | string | `"Aurora"` | Text shown in the title bar |
-| `Size` | UDim2 | `UDim2.new(0, 620, 0, 420)` | Initial window size |
-| `Position` | UDim2 | Centred on screen | Initial position |
+| `Title` | string | `"Aurora"` | Window title bar text |
+| `Size` | UDim2 | `620×420` | Initial window size |
+| `Position` | UDim2 | centred | Initial screen position |
 
-Returns a [Window](#3-window) object.
+Returns a [Window](#3-window).
 
-```lua
-local win = Aurora:CreateWindow({
-    Title    = "My Script",
-    Size     = UDim2.new(0, 680, 0, 520),
-    Position = UDim2.new(0.5, -340, 0.5, -260),
-})
-```
+### `Aurora:CreateConfig(cfg)`
+
+See [Config System](#9-config-system) for full reference.
 
 ### `Aurora:Notify(cfg)`
 
-Shows a toast notification using the shared singleton layer. See [Notifications](#7-notifications) for the full `cfg` reference.
+See [Notifications](#7-notifications).
 
-### `Aurora:SetTheme(theme)`
+### `Aurora:SetTheme(tbl)`
 
-Patches one or more theme colour keys. **Only affects elements created after the call.** Silently ignores unknown keys.
+Patches `Aurora.Config.Theme` at runtime. Only elements created **after** this call use the new colours. Elements already on screen are not retroactively updated.
 
 ```lua
 Aurora:SetTheme({
@@ -95,19 +118,19 @@ Aurora:SetTheme({
 
 Valid keys: `Primary`, `Secondary`, `Background`, `Surface`, `Text`, `TextMuted`, `Success`, `Warning`, `Error`, `Border`, `Glow`.
 
-### `Aurora:CreateConfig(options)`
-
-See [Config System](#9-config-system).
-
 ### `Aurora.Config`
 
-Direct reference to the internal Config table. Useful for reading animation settings or theme values at runtime.
+Direct access to the internal config table. Useful for reading animation settings.
 
 ```lua
 print(Aurora.Config.Theme.Primary)
-print(Aurora.Config.Animation.Duration)   -- default 0.3
-print(Aurora.Config.Animation.Easing)     -- default Enum.EasingStyle.Quart
+print(Aurora.Config.Animation.Duration)   -- 0.3
+print(Aurora.Config.Font)                 -- Enum.Font.Gotham
+print(Aurora.Config.CornerRadius)         -- UDim.new(0, 6)
+print(Aurora.Config.ShadowTransparency)   -- 0.7
 ```
+
+See [Themes & Config](#8-themes--config) for the full table.
 
 ---
 
@@ -117,230 +140,201 @@ print(Aurora.Config.Animation.Easing)     -- default Enum.EasingStyle.Quart
 
 | Property | Type | Description |
 |---|---|---|
-| `ScreenGui` | ScreenGui | The ScreenGui instance parented to PlayerGui |
-| `MainFrame` | Frame | The outermost draggable frame |
-| `TabContainer` | Frame | The sidebar that holds tab buttons |
-| `ContentContainer` | Frame | The right-hand panel that holds tab content |
-| `Tabs` | Tab[] | Array of all tabs in creation order |
-| `ActiveTab` | Tab | The currently visible tab |
-| `OnTabChanged` | Signal | Fires `(newTab, oldTab)` when tabs switch |
+| `Tabs` | `Tab[]` | Array of all tabs in creation order |
+| `ActiveTab` | `Tab` | Currently visible tab |
+| `ScreenGui` | `Instance` | The `ScreenGui` created in `PlayerGui` |
+| `MainFrame` | `Instance` | The root `Frame` of the window |
+| `OnTabChanged` | `Signal` | Fires `(newTab, oldTab)` when the active tab switches |
 
 ### Methods
 
-#### `Window:CreateTab(config)`
+```lua
+win:CreateTab(cfg)      -- → Tab
+win:SelectTab(index)    -- switch to tab by 1-based index (fires OnTabChanged)
+win:Notify(cfg)         -- show a toast scoped to this window's notification layer
+win:Destroy()           -- teardown: disconnects all connections, destroys ScreenGui
+```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Name` | string | `"Tab"` | Display name in the sidebar |
-| `Icon` | string | `""` | Roblox asset ID string for a 16×16 icon shown left of the name. Leave empty for text-only. |
+### `win:CreateTab(cfg)`
 
-Returns a [Tab](#4-tab) object.
-
-The first tab created is auto-activated. `OnTabChanged` does **not** fire for this initial activation.
+| Key | Type | Description |
+|---|---|---|
+| `Name` | string | Tab label text |
+| `Icon` | string | Roblox asset ID string for the tab icon image. Optional — omit for text-only tabs |
 
 ```lua
 local tab = win:CreateTab({ Name = "Settings", Icon = "rbxassetid://123456" })
 ```
 
-#### `Window:SelectTab(index)`
+> **First tab** is auto-activated when created, without firing `OnTabChanged`.
 
-Programmatically switch to a tab by its 1-based index in `Window.Tabs`.
+### `win:Destroy()`
 
-```lua
-win:SelectTab(2)   -- switches to the second tab
-```
-
-#### `Window:Notify(cfg)`
-
-Shows a notification scoped to this window's own layer. Two windows can never corrupt each other's stacks. See [Notifications](#7-notifications).
-
-#### `Window:Destroy()`
-
-Tears down the entire window:
-1. Disconnects all element-level connections across all tabs (via each element's ConnSet)
+Performs a full teardown in this order:
+1. Disconnects every element's `ConnSet` across all tabs
 2. Disconnects window-level connections (drag, sidebar reflow)
-3. Destroys the per-window notification layer if it was created
-4. Destroys the ScreenGui (cascades to all children)
+3. Destroys the per-window notification layer if one was created
+4. Destroys `ScreenGui` (cascades to all child instances)
 
-### Built-in controls
+### Window behaviour
 
-- **Close button (✕)** — animates the window to zero size, then calls `Window:Destroy()`
-- **Minimise button (—)** — toggles the window height between `40px` (title bar only) and the original size, with a 0.3s tween
-- **Drag** — the window is draggable by clicking and dragging the title bar
-
-### Intro animation
-
-The window opens with a Back/Out tween (`0.5s`) from the centre of its target position, expanding outward to its full size.
+- **Draggable** — drag by the title bar
+- **Minimize** — the `—` button collapses the window to 40px (title bar only). Click again to restore
+- **Close** — the `✕` button plays a shrink animation then calls `Destroy()`
+- **Intro animation** — the window opens with a `Back` easing expand from the centre point (0.5s)
+- **Sidebar auto-resize** — the tab sidebar grows with the longest tab name (min 110px, max 200px). The content area reflows automatically
 
 ---
 
 ## 4. Tab
 
+All 16 `Create*` methods are defined once on the `Tab` prototype — creating many tabs allocates zero additional closures compared to one.
+
 ### Properties
 
 | Property | Type | Description |
 |---|---|---|
-| `Name` | string | The tab's display name |
-| `Button` | TextButton | The sidebar button instance |
-| `Label` | TextLabel | The text label inside the sidebar button |
-| `Content` | ScrollingFrame | The scrollable content area |
-| `Elements` | Element[] | All elements registered to this tab |
-| `OnElementAdded` | Signal | Fires with the element whenever a new element is registered |
+| `Name` | string | Tab name as passed to `CreateTab` |
+| `Button` | `Instance` | The sidebar `TextButton` |
+| `Label` | `Instance` | The `TextLabel` inside the button |
+| `Content` | `Instance` | The `ScrollingFrame` holding all elements |
+| `Elements` | `table` | Array of all registered elements in insertion order |
+| `OnElementAdded` | `Signal` | Fires with the element when any `Create*` method completes |
 
 ### Methods
 
-#### `Tab:Activate()`
-
-Switches the window to this tab. Fires `Window.OnTabChanged` with `(self, previousTab)`. Does nothing if this tab is already active.
-
 ```lua
-tab:Activate()
+tab:Activate()    -- programmatically switch to this tab (fires window.OnTabChanged)
+tab:CreateButton(cfg)
+tab:CreateToggle(cfg)
+tab:CreateSlider(cfg)
+tab:CreateDropdown(cfg)
+tab:CreateSearchDropdown(cfg)
+tab:CreateMultiSelect(cfg)
+tab:CreateInput(cfg)
+tab:CreateNumberInput(cfg)
+tab:CreateKeybind(cfg)
+tab:CreateColorPicker(cfg)
+tab:CreateLabel(cfg)
+tab:CreateSection(cfg)
+tab:CreateProgressBar(cfg)
+tab:CreateStatusLabel(cfg)
+tab:CreateTable(cfg)
+tab:CreateRow(cfg)
 ```
 
-### Element constructors
-
-All element constructors follow the pattern `Tab:Create*(cfg)` and return an element object. Every element automatically receives the [common element API](#5-elements--common-api).
-
-| Constructor | Description |
-|---|---|
-| `Tab:CreateButton(cfg)` | Clickable button |
-| `Tab:CreateToggle(cfg)` | On/off toggle switch |
-| `Tab:CreateSlider(cfg)` | Draggable numeric slider |
-| `Tab:CreateDropdown(cfg)` | Single-select expandable dropdown |
-| `Tab:CreateSearchDropdown(cfg)` | Dropdown with live search filter |
-| `Tab:CreateMultiSelect(cfg)` | Multi-option select with checkboxes |
-| `Tab:CreateInput(cfg)` | Text input field |
-| `Tab:CreateNumberInput(cfg)` | Numeric input with ± step buttons |
-| `Tab:CreateKeybind(cfg)` | Key capture input |
-| `Tab:CreateColorPicker(cfg)` | HSV + hex colour picker |
-| `Tab:CreateLabel(cfg)` | Static or dynamic text label |
-| `Tab:CreateSection(cfg)` | Visual section divider with line |
-| `Tab:CreateProgressBar(cfg)` | 0–1 progress bar |
-| `Tab:CreateStatusLabel(cfg)` | Coloured status pill with dot |
-| `Tab:CreateTable(cfg)` | Scrollable data table |
-| `Tab:CreateRow(cfg)` | Horizontal layout container |
+> `tab:Activate()` is equivalent to clicking the tab button. It fires `window.OnTabChanged` with `(self, previousTab)`. Calling it on the already-active tab is a no-op.
 
 ### Empty state
 
-When a tab has no elements, a greyed-out `"No elements yet."` placeholder is shown. It disappears automatically when the first element is added and reappears if all elements are destroyed.
+Every new tab shows a `"No elements yet."` placeholder text. It disappears automatically as soon as the first element is registered. It reappears if all elements are destroyed.
 
-### Scroll bar
+### Tab content scrolling
 
-The content area is a `ScrollingFrame` with `ScrollBarThickness = 3` and a `Border`-coloured scroll bar. It auto-sizes vertically to fit its contents.
+The content area is a `ScrollingFrame` with `AutomaticCanvasSize = Y`. Elements stack vertically with 8px gaps and 10px top/bottom padding. The scroll bar is 3px wide and uses `Config.Theme.Border` colour.
 
 ---
 
-## 5. Elements — common API
+## 5. Elements — Common API
 
-Every element returned by a `Tab:Create*` call exposes these members, regardless of type.
+Every element returned by a `Create*` call exposes these fields and functions regardless of element type.
 
-### Properties
+### Standard fields
 
-| Property | Type | Description |
+| Field | Type | Description |
 |---|---|---|
-| `Frame` | Frame | The root Roblox instance for this element |
-| `OnChanged` | Signal | Fires on user interaction. **Never fires** when `SetValue` is called (except Label, StatusLabel, ProgressBar — see individual docs) |
+| `OnChanged` | `Signal` | Fires on user interaction. **Never** fires when `SetValue` is called (except `Label`, `StatusLabel`, `ProgressBar` — see their entries). **Not present on `Button` or `Section`** — those have no interactive value |
+| `Frame` | `Instance` | The root `Frame` instance of the element in the UI |
+| `_conns` | `ConnSet` | The element's connection set. Advanced use only |
 
-### Methods
+### Standard functions
 
-| Method | Description |
-|---|---|
-| `element.GetValue()` | Returns the element's current value |
-| `element.SetValue(v)` | Updates the element silently — never fires `Callback` or `OnChanged` |
-| `element.SetEnabled(bool)` | Enable or disable. Disabled elements show a semi-transparent overlay and greyed text. Expandable elements (Dropdown, SearchDropdown, MultiSelect, ColorPicker) auto-collapse when disabled. |
-| `element.SetVisible(bool)` | Show or hide the element's frame |
-| `element.Destroy()` | Remove the element from the UI, disconnect all connections, and remove it from `Tab.Elements` |
+```lua
+element.GetValue()           -- returns current value
+element.SetValue(v)          -- updates silently — never fires Callback or OnChanged*
+element.SetEnabled(bool)     -- enable/disable. Disabled = semi-transparent overlay, no interaction
+element.SetVisible(bool)     -- show/hide the element's frame
+element.Destroy()            -- disconnect all connections, remove from Tab.Elements, destroy frame
+```
 
-### The SetValue contract
+> **\* SetValue silent contract** — `SetValue` never fires `Callback` or `OnChanged` on any interactive element. This is a hard guarantee that makes the ConfigSystem safe: it can call `SetValue` to restore saved values without triggering re-saves or callback side effects.
+>
+> The three display-only elements (`Label`, `StatusLabel`, `ProgressBar`) are the only exceptions — they have no user interaction, so `SetValue` is the only meaningful change mechanism and fires `OnChanged` to keep observers in sync.
 
-`SetValue` is **always** silent. It updates the display and internal state without triggering `Callback` or `OnChanged`. This is a hard guarantee used by the Config System to apply saved values at load time without causing circular save→load→save loops.
+### `SetEnabled(false)` behaviour
 
-**Exceptions:** `ProgressBar`, `StatusLabel`, and `Label` have no user interaction — `SetValue` is the only meaningful change mechanism for them, so their `OnChanged` **does** fire on `SetValue`.
+- Any open expandable (Dropdown, SearchDropdown, MultiSelect, ColorPicker) is force-collapsed first
+- All descendant text labels and buttons are dimmed to `Config.Theme.Border`
+- A semi-transparent overlay `TextButton` is placed over the frame at `ZIndex 99` to block all input
+- `SetEnabled(true)` reverses all of the above
 
 ---
 
-## 6. Elements — reference
-
----
+## 6. Elements — Reference
 
 ### Button
 
 ```lua
 local btn = tab:CreateButton({
-    Text     = "Do Something",
-    Callback = function() print("clicked") end,
+    Text     = "Click Me",    -- button label
+    Callback = function()
+        -- fires on click
+    end,
 })
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Text` | string | `"Button"` | Button label |
-| `Callback` | function | nil | Called on click |
+**Extra API:**
+```lua
+btn.SetText("New Label")    -- update button text at runtime
+```
 
-**Extra methods:**
-
-| Method | Description |
-|---|---|
-| `btn.SetText(text)` | Update the button label |
-
-**Behaviour:** Hover darkens the background. MouseButton1Down flashes Primary colour. MouseButton1Up reverts to hover colour.
-
-`GetValue()` returns `nil` — buttons have no value state.  
-`OnChanged` is not present — use `Callback`.
+**Behaviour:** hover tints the background slightly; `MouseButton1Down` flashes the primary colour; `MouseButton1Up` reverts to hover state.
 
 ---
 
 ### Toggle
 
 ```lua
-local tog = tab:CreateToggle({
+local toggle = tab:CreateToggle({
     Text     = "Auto Farm",
-    Default  = false,
-    Callback = function(value) print("toggle:", value) end,
+    Default  = false,          -- initial state
+    Callback = function(val)   -- val: boolean
+    end,
 })
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Text` | string | `"Toggle"` | Label text |
-| `Default` | bool | `false` | Initial state |
-| `Callback` | function | nil | Called with `(bool)` on user interaction |
+**`GetValue()`** → `boolean`
 
-**Values:** `GetValue()` returns `bool`. `SetValue(bool)` coerces to boolean.
-
-```lua
-tog.SetValue(true)           -- silent, no callback
-tog.GetValue()               -- true
-tog.OnChanged:Connect(function(v) print(v) end)
-```
+**`SetValue(bool)`** — coerces to boolean. Animates the track and circle. Silent.
 
 ---
 
 ### Slider
 
 ```lua
-local sld = tab:CreateSlider({
+local slider = tab:CreateSlider({
     Text      = "Speed",
     Min       = 0,
     Max       = 100,
     Default   = 16,
-    Increment = 1,
-    Callback  = function(value) print("speed:", value) end,
+    Increment = 1,        -- snap step
+    Callback  = function(val)   -- val: number
+    end,
 })
 ```
 
-| Key | Type | Default | Description |
+| Option | Type | Default | Description |
 |---|---|---|---|
-| `Text` | string | `"Slider"` | Label text |
 | `Min` | number | `0` | Minimum value |
 | `Max` | number | `100` | Maximum value |
-| `Default` | number | `Min` | Initial value, clamped to [Min, Max] |
-| `Increment` | number | `1` | Snap increment. Value is always `Min + n * Increment` |
-| `Callback` | function | nil | Called with `(number)` on drag |
+| `Default` | number | `Min` | Initial value, clamped to Min..Max |
+| `Increment` | number | `1` | Snap step. Value is always a multiple of this |
 
-**Values:** `GetValue()` returns `number`. `SetValue(number)` clamps and snaps silently.
+**`GetValue()`** → `number`
 
-The value label to the right of the label shows the current value in `Primary` colour. The track background uses `Border` colour; the fill and knob use `Primary`.
+**`SetValue(n)`** — clamps to Min..Max, snaps to `Increment`. Silent.
+
+**Behaviour:** drag the knob or click anywhere on the bar. The fill and value label update live during drag.
 
 ---
 
@@ -348,60 +342,53 @@ The value label to the right of the label shows the current value in `Primary` c
 
 ```lua
 local dd = tab:CreateDropdown({
-    Text     = "Mode",
-    Options  = { "Passive", "Aggressive", "Stealth" },
-    Default  = "Passive",
-    Callback = function(value) print("mode:", value) end,
+    Text     = "Fruit",
+    Options  = { "Apple", "Banana", "Cherry" },
+    Default  = "Apple",
+    Callback = function(chosen)   -- chosen: string
+    end,
 })
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Text` | string | `"Dropdown"` | Label shown in the header |
-| `Options` | string[] | `{}` | List of option strings |
-| `Default` | string | `"Select..."` | Initially selected option |
-| `Callback` | function | nil | Called with `(string)` on selection |
+**`GetValue()`** → `string` (selected option)
 
-**Values:** `GetValue()` returns the selected string. `SetValue(string)` selects silently if the value exists in the options list. If the value is not in the list, nothing happens.
+**`SetValue(str)`** — updates the label. Silent. No-op if `str` is not in the current options list.
 
-**Extra methods:**
-
-| Method | Description |
-|---|---|
-| `dd.SetOptions(options)` | Replace the option list at runtime. Clears and rebuilds all option buttons. Preserves the selected value if it still exists in the new list; otherwise falls back to the first option. Collapses the dropdown. Does **not** fire `Callback` or `OnChanged`. |
+**`SetOptions(tbl)`** — replaces the option list entirely at runtime. Clears and rebuilds all option buttons. Preserves `selected` if it still exists in the new list; otherwise falls back to `options[1]` or `"Select..."`. Collapses the dropdown. Silent (does not fire `Callback` or `OnChanged`).
 
 ```lua
-dd.SetOptions({ "Easy", "Normal", "Hard" })
-dd.SetValue("Normal")
+-- Example: update options then select the first new one
+dd.SetOptions({ "Sword", "Shield", "Bow" })
+dd.SetValue("Shield")
 ```
-
-**Behaviour:** Clicking the header toggles expand/collapse with a tween. Clicking an option selects it, updates the header text, collapses, and fires `Callback` + `OnChanged`. The expandable height is `36 + N * 30` where N is the option count.
 
 ---
 
 ### SearchDropdown
 
+Identical to `Dropdown` but adds a live-filter text box above the option list.
+
 ```lua
-local sd = tab:CreateSearchDropdown({
-    Text       = "Fruit",
-    Options    = { "Apple", "Banana", "Cherry", "Durian" },
-    Default    = "Apple",
-    MaxVisible = 6,
-    Callback   = function(value) print("fruit:", value) end,
+local sdd = tab:CreateSearchDropdown({
+    Text       = "Quest Type",
+    Options    = { ... },
+    Default    = "Any",
+    MaxVisible = 6,       -- max rows to show before scrolling (default 6)
+    Callback   = function(chosen) end,
 })
 ```
 
-| Key | Type | Default | Description |
+| Extra option | Type | Default | Description |
 |---|---|---|---|
-| `Text` | string | `"Search"` | Label shown in the header |
-| `Options` | string[] | `{}` | Full option list |
-| `Default` | string | `"Select..."` | Initially selected option |
-| `MaxVisible` | number | `6` | Maximum rows shown before scrolling |
-| `Callback` | function | nil | Called with `(string)` on selection |
+| `MaxVisible` | number | `6` | Maximum visible rows; list becomes scrollable beyond this |
 
-**Values:** Same as Dropdown — `GetValue()` returns string, `SetValue(string)` is silent.
+**`GetValue()`** → `string`
 
-**Behaviour:** When expanded, a search TextBox appears at the top. Typing filters the visible options in real time (case-insensitive substring match). Clicking an option selects it and collapses. The panel height is capped at `36 + MaxVisible * 30 + 36` (header + rows + search bar).
+**`SetValue(str)`** — Silent. Must be in the options list.
+
+> `SearchDropdown` does **not** have `SetOptions`. Use a standard `Dropdown` if you need runtime option replacement.
+
+> The search box uses `ClearTextOnFocus = true` — it clears when the user clicks into it. This differs from `Input`, which preserves existing text on focus.
 
 ---
 
@@ -410,26 +397,24 @@ local sd = tab:CreateSearchDropdown({
 ```lua
 local ms = tab:CreateMultiSelect({
     Text     = "Rarities",
-    Options  = { "Common", "Uncommon", "Rare", "Epic", "Legendary" },
-    Default  = { "Rare", "Epic", "Legendary" },
-    Callback = function(selected) print(table.concat(selected, ", ")) end,
+    Options  = { "Common", "Rare", "Epic", "Legendary" },
+    Default  = { "Rare", "Epic" },    -- pre-selected array
+    Callback = function(selected)      -- selected: string[]
+    end,
 })
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Text` | string | `"Select"` | Label shown in the header |
-| `Options` | string[] | `{}` | List of option strings |
-| `Default` | string[] | `{}` | Array of initially selected options |
-| `Callback` | function | nil | Called with `(string[])` — array of currently selected options in original order |
+**`GetValue()`** → `string[]` — array of selected options in original `Options` order.
 
-**Values:** `GetValue()` returns a `string[]` of selected options in the original `Options` order. `SetValue(string[])` replaces the entire selection silently.
+**`SetValue(tbl)`** — replaces the entire selection. Syncs all checkboxes. Silent.
 
-**Extra methods:**
+**`IsSelected(str)`** → `boolean` — returns `true` if the given option is currently selected.
 
-| Method | Description |
-|---|---|
-| `ms.IsSelected(option)` | Returns `true` if the given option string is currently selected |
+```lua
+if ms.IsSelected("Legendary") then
+    -- ...
+end
+```
 
 **Header text behaviour:**
 - 0 selected → `"Rarities: None"`
@@ -441,128 +426,116 @@ local ms = tab:CreateMultiSelect({
 ### Input
 
 ```lua
-local inp = tab:CreateInput({
-    Text        = "Webhook URL",
-    Placeholder = "https://discord.com/api/webhooks/...",
-    Callback    = function(value) print("entered:", value) end,
+local input = tab:CreateInput({
+    Text        = "Webhook URL",          -- label above the box
+    Placeholder = "https://discord.com/...",
+    Callback    = function(text)           -- fires on Enter
+    end,
 })
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Text` | string | `"Input"` | Small label above the text box |
-| `Placeholder` | string | `"Type here..."` | Placeholder text shown when empty |
-| `Callback` | function | nil | Called with `(string)` **only when Enter is pressed** (FocusLost with `enter = true`) |
+**`GetValue()`** → `string` (current text box content)
 
-**Values:** `GetValue()` returns the current text box string. `SetValue(string)` sets the text silently.
+**`SetValue(str)`** — sets the text box content. Silent.
 
-> **Note:** `Callback` and `OnChanged` only fire when the user presses Enter, not on every keystroke and not on focus loss without Enter.
+**Behaviour:** `Callback` (and `OnChanged`) fire only when the user presses **Enter** (`FocusLost` with `enterPressed = true`). Clicking away without pressing Enter does not fire anything. The box highlights on focus.
 
 ---
 
 ### NumberInput
 
 ```lua
-local ni = tab:CreateNumberInput({
+local numInput = tab:CreateNumberInput({
     Text    = "Delay (ms)",
     Min     = 0,
-    Max     = 10000,
-    Step    = 100,
-    Default = 500,
-    Callback = function(value) print("delay:", value) end,
+    Max     = 5000,
+    Step    = 50,       -- increment/decrement amount for + / − buttons
+    Default = 200,
+    Callback = function(val)   -- val: number
+    end,
 })
 ```
 
-| Key | Type | Default | Description |
+> **Note:** `NumberInput` uses `Step`, not `Increment` (that's `Slider`).
+
+| Option | Type | Default | Description |
 |---|---|---|---|
-| `Text` | string | `"Number"` | Small label above the row |
 | `Min` | number | `-math.huge` | Minimum value |
 | `Max` | number | `math.huge` | Maximum value |
-| `Step` | number | `1` | Step size for ± buttons and snap rounding |
-| `Default` | number | `0` | Initial value, clamped and snapped |
-| `Callback` | function | nil | Called with `(number)` on commit |
+| `Step` | number | `1` | Amount the `+` / `−` buttons change the value by |
+| `Default` | number | `0` | Initial value, clamped to Min..Max |
 
-**Values:** `GetValue()` returns `number`. `SetValue(number)` clamps and snaps silently.
+**`GetValue()`** → `number`
 
-**Behaviour:** The element has a `−` button on the left, a `+` button on the right, and a TextBox in the middle. Clicking `−`/`+` steps by `Step`. Typing a value in the box and losing focus commits it (clamps + snaps). Invalid text (non-numeric) reverts to the last valid value.
+**`SetValue(n)`** — snaps and clamps. Silent.
+
+**Behaviour:** click `−` / `+` or type directly. On `FocusLost`, typed input is parsed; invalid text reverts to the last valid value. Values are always snapped to `Step` and clamped to `[Min, Max]`.
 
 ---
 
 ### Keybind
 
 ```lua
-local kb = tab:CreateKeybind({
-    Text     = "Toggle Script",
+local keybind = tab:CreateKeybind({
+    Text     = "Toggle GUI",
     Default  = Enum.KeyCode.RightShift,
-    Callback = function(keyCode) print("bound to:", keyCode.Name) end,
+    Callback = function(key)   -- key: Enum.KeyCode
+    end,
 })
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Text` | string | `"Keybind"` | Label text |
-| `Default` | Enum.KeyCode | `Enum.KeyCode.Unknown` | Initial key. `Unknown` displays as `"None"` |
-| `Callback` | function | nil | Called with `(Enum.KeyCode)` when a key is bound |
+**`GetValue()`** → `Enum.KeyCode`
 
-**Values:** `GetValue()` returns `Enum.KeyCode`. `SetValue(Enum.KeyCode)` sets the key silently.
+**`SetValue(keyCode)`** — updates the button label. Silent.
 
-**Behaviour:** Clicking the key button enters listening mode (`"..."` is shown, button turns Primary colour). Press any keyboard key to bind it. Clicking anywhere else while listening cancels and restores the previous key. The element manages its own UIS connection which is cleaned up on `Destroy`.
-
-```lua
-kb.SetValue(Enum.KeyCode.F5)
-print(kb.GetValue().Name)   -- "F5"
-```
+**Behaviour:**
+- Click the key button to enter listening mode — it shows `"..."` and turns primary colour
+- Press any key while listening to bind it
+- Click the button again while listening to **cancel** (reverts to the previous key)
+- Clicking anywhere else on screen while listening also cancels
+- `Enum.KeyCode.Unknown` displays as `"None"`
+- Only keyboard keys are captured (`UserInputType.Keyboard`). Game-processed input (`processed = true`) is filtered out.
 
 ---
 
 ### ColorPicker
 
 ```lua
-local cp = tab:CreateColorPicker({
-    Text     = "Beam Color",
+local picker = tab:CreateColorPicker({
+    Text     = "Trail Color",
     Default  = Color3.fromRGB(88, 101, 242),
-    Callback = function(color) print(color) end,
+    Callback = function(color)   -- color: Color3
+    end,
 })
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Text` | string | `"Color"` | Label text |
-| `Default` | Color3 | `Color3.new(1,1,1)` | Initial colour |
-| `Callback` | function | nil | Called with `(Color3)` on user interaction |
+**`GetValue()`** → `Color3`
 
-**Values:** `GetValue()` returns `Color3`. `SetValue(Color3)` sets silently.
+**`SetValue(color3)`** — updates the HSV state, preview swatch, cursors, and hex input. Silent.
 
-**Behaviour:** The header shows the label and a small colour preview swatch. Clicking expands a panel with an SV (saturation/value) gradient pad and a separate hue strip. A hex TextBox below the pads also accepts typed hex values (`#RRGGBB` or `RRGGBB`, case-insensitive). The four UIS drag connections live in the element's own ConnSet and are cleaned up on `Destroy`.
+**Behaviour:**
+- Click the header to expand/collapse the picker panel
+- The SV (saturation/value) pad is the square area; drag to set saturation and brightness
+- The hue bar is the thin vertical strip on the right; drag to set hue
+- The hex input at the bottom accepts 6-character hex codes (with or without `#`). Press Enter to apply
 
 ---
 
 ### Label
 
 ```lua
-local lbl = tab:CreateLabel({ Text = "Status: Idle" })
--- or shorthand:
-local lbl = tab:CreateLabel("Status: Idle")
+local lbl = tab:CreateLabel({ Text = "Status: idle" })
+-- Legacy string form also works:
+local lbl = tab:CreateLabel("Status: idle")
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Text` | string | `"Label"` | Display text |
+**`GetValue()`** → `string`
 
-Both `{ Text = "..." }` and a plain string are accepted.
+**`SetValue(str)`** — updates the label text AND **fires `OnChanged`**. This is intentional: `Label` has no user interaction, so `SetValue` is the only change mechanism.
 
-**Extra methods:**
-
-| Method | Description |
-|---|---|
-| `lbl.SetText(text)` | Update the label text (does not fire `OnChanged`) |
-
-**SetValue behaviour (exception):** `lbl.SetValue(text)` updates the label AND fires `OnChanged`. This is intentional — Label has no user interaction, so `SetValue` is the only change mechanism.
-
+**Extra API:**
 ```lua
-lbl.SetValue("Status: Running")   -- fires OnChanged
-lbl.SetText("Status: Running")    -- silent, no OnChanged
-lbl.GetValue()                    -- returns current text string
+lbl.SetText("New text")    -- identical to SetValue but does NOT fire OnChanged
 ```
 
 ---
@@ -570,60 +543,43 @@ lbl.GetValue()                    -- returns current text string
 ### Section
 
 ```lua
-local sec = tab:CreateSection({ Text = "Combat Settings" })
--- or shorthand:
-local sec = tab:CreateSection("Combat Settings")
+tab:CreateSection({ Text = "Automation" })
+-- Legacy string form also works:
+tab:CreateSection("Automation")
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Text` | string | `"Section"` | Section heading text |
+Renders as a small uppercase label in `Primary` colour with a 1px border line beneath it. Used as a visual divider between groups of elements.
 
-Both `{ Text = "..." }` and a plain string are accepted.
-
-**Behaviour:** The text is rendered **in uppercase** automatically. A 1px `Border`-coloured line is drawn below the label. Height is `28px`. Background is transparent (no card).
-
-**Extra methods:**
-
-| Method | Description |
-|---|---|
-| `sec.SetText(text)` | Update heading (auto-uppercased) |
-| `sec.SetValue(text)` | Same as SetText (auto-uppercased) |
-| `sec.GetValue()` | Returns the current uppercased text |
+**Extra API:**
+```lua
+section.SetValue("NEW TITLE")    -- updates label (auto-uppercases)
+section.SetText("NEW TITLE")     -- identical
+section.GetValue()               -- returns current label text
+```
 
 ---
 
 ### ProgressBar
 
 ```lua
-local pb = tab:CreateProgressBar({
-    Text    = "Loading Assets",
-    Default = 0,
-    Color   = Color3.fromRGB(46, 204, 113),
+local bar = tab:CreateProgressBar({
+    Text    = "Loading",
+    Default = 0,                           -- initial fill (0..1)
+    Color   = Config.Theme.Success,        -- optional bar colour
 })
+
+-- Update from a game loop:
+bar.SetValue(0.65)   -- 65% fill
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Text` | string | `"Progress"` | Label above the bar |
-| `Default` | number | `0` | Initial value, clamped to [0, 1] |
-| `Color` | Color3 | `Config.Theme.Primary` | Fill colour |
+**`GetValue()`** → `number` (0..1)
 
-**Values:** `GetValue()` returns the current fraction (0–1). 
+**`SetValue(n)`** — clamps to 0..1, animates the fill with `Utility.Tween`, updates the `%` label, and **fires `OnChanged`**. Unlike interactive elements, this fires intentionally since `SetValue` is the only change mechanism.
 
-**SetValue behaviour (exception):** `pb.SetValue(number)` updates the bar, the percentage label, fires `OnChanged`, and tweens the fill width (0.2s). There is no user interaction — `SetValue` is the only change mechanism.
-
-**Extra methods:**
-
-| Method | Description |
-|---|---|
-| `pb.SetLabel(text)` | Update the text label above the bar |
-| `pb.SetColor(Color3)` | Change the fill colour at runtime |
-
+**Extra API:**
 ```lua
-pb.SetValue(0.75)    -- shows 75%, fires OnChanged
-pb.SetLabel("Downloading map...")
-pb.SetColor(Color3.fromRGB(255, 200, 0))
+bar.SetLabel("Harvesting...")    -- update the text label above the bar
+bar.SetColor(Color3.fromRGB(255, 200, 0))   -- change bar fill colour at runtime
 ```
 
 ---
@@ -631,37 +587,34 @@ pb.SetColor(Color3.fromRGB(255, 200, 0))
 ### StatusLabel
 
 ```lua
-local sl = tab:CreateStatusLabel({
-    Text = "Connection established",
-    Type = "Success",
+local status = tab:CreateStatusLabel({
+    Text = "Connected",
+    Type = "Success",    -- "Info" | "Success" | "Warning" | "Error"
 })
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Text` | string | `""` | Status message |
-| `Type` | string | `"Info"` | One of: `"Info"` · `"Success"` · `"Warning"` · `"Error"` |
+Renders as a small coloured dot followed by text. The dot and text colour both match the `Type`.
 
-Type colours:
-- `Info` → `Primary`
-- `Success` → `Success` (green)
-- `Warning` → `Warning` (yellow)
-- `Error` → `Error` (red)
-
-**SetValue behaviour (exception):** `sl.SetValue(text, type?)` updates the text and optionally the type, then fires `OnChanged`. Both the dot and label text change colour.
-
-**Extra methods:**
-
-| Method | Description |
+| Type | Colour |
 |---|---|
-| `sl.SetText(text)` | Update text only (silent, no type change, no `OnChanged`) |
-| `sl.SetType(type)` | Update type/colour only (updates dot and text colour) |
+| `Info` | `Primary` |
+| `Success` | `Success` |
+| `Warning` | `Warning` |
+| `Error` | `Error` |
+
+**`GetValue()`** → `string` (current text)
+
+**`SetValue(text, type?)`** — updates text and optionally changes the type. **Fires `OnChanged`**.
 
 ```lua
-sl.SetValue("Disconnected", "Error")          -- fires OnChanged
-sl.SetText("Reconnecting...")                 -- silent
-sl.SetType("Warning")
-sl.GetValue()                                 -- returns current text string
+status.SetValue("Disconnected", "Error")
+status.SetValue("Reconnecting...")     -- keeps current type
+```
+
+**Extra API:**
+```lua
+status.SetText("New text")    -- updates text only, does NOT fire OnChanged
+status.SetType("Warning")     -- change type colour without touching text
 ```
 
 ---
@@ -672,129 +625,97 @@ sl.GetValue()                                 -- returns current text string
 local tbl = tab:CreateTable({
     Columns    = { "Name", "Value", "Status" },
     Rows       = {
-        { "Speed",   "50",   "Active" },
-        { "Gravity", "196",  "Active" },
+        { "Speed",    "50",  "Active"   },
+        { "Gravity",  "196", "Inactive" },
     },
-    MaxVisible = 6,
+    MaxVisible = 6,    -- rows before the body scrolls (default 6)
 })
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Columns` | string[] | `{ "Column 1", "Column 2" }` | Column header names. Determines column count. |
-| `Rows` | string[][] | `{}` | Initial row data. Each row is a string array matching column count. |
-| `MaxVisible` | number | `6` | Maximum rows shown before the table scrolls internally |
-
-**Extra methods:**
-
-| Method | Description |
-|---|---|
-| `tbl.SetRows(rows)` | Replace all rows at once. Accepts `string[][]`. |
-| `tbl.AddRow(rowData)` | Append a single row (`string[]`) |
-| `tbl.RemoveRow(index)` | Remove a row by 1-based index. Only re-renders rows after the removed index (not a full rebuild). |
-| `tbl.SetCell(rowIndex, colIndex, value)` | Update a single cell by 1-based indices |
-| `tbl.SetRowColor(index, Color3)` | Tint a row's background. Integrates with the per-row hover system — hover uses this colour as its base. |
-| `tbl.ClearRowColor(index)` | Restore a row to the default background |
+The table has a fixed `Primary`-coloured header row and a scrollable body.
 
 **Signals:**
+```lua
+tbl.OnRowClicked:Connect(function(rowIndex, rowData)
+    print("Clicked row", rowIndex, rowData[1])
+end)
+```
 
-| Signal | Description |
-|---|---|
-| `tbl.OnRowClicked` | Fires `(rowIndex, rowData)` when a row is clicked. `rowData` is the `string[]` for that row. |
+**Methods:**
 
 ```lua
-tbl.OnRowClicked:Connect(function(index, row)
-    print("clicked row", index, ":", row[1])
-end)
-
-tbl.AddRow({ "Jump Power", "50", "Inactive" })
-tbl.SetCell(1, 3, "Inactive")
-tbl.SetRowColor(2, Color3.fromRGB(50, 80, 50))
-tbl.RemoveRow(1)
+tbl.SetRows(newRows)              -- replace all rows at once. Clears colour overrides
+tbl.AddRow(rowData)               -- append a row
+tbl.RemoveRow(index)              -- remove by 1-based index. Only re-renders rows after the removed index
+tbl.SetCell(rowIndex, colIndex, value)   -- update a single cell
+tbl.SetRowColor(index, color)     -- tint a row's background colour
+tbl.ClearRowColor(index)          -- restore a row to its default alternating colour
+tbl.Clear()                       -- remove all rows
+tbl.GetRows()                     -- returns a shallow copy of the rows array
 ```
+
+**Alternating rows:** odd rows use `Background`, even rows use `Surface`.
+
+**`SetRowColor` / `ClearRowColor`** correctly handle hover: each row stores its own base colour as an upvalue, so hovering a tinted row uses the tint as the restore colour rather than the default alternating colour.
 
 ---
 
 ### Row
 
+New in v7. A horizontal layout container that places elements side by side in equal columns.
+
 ```lua
 local row = tab:CreateRow({
-    Columns = 2,
-    Gap     = 6,
-    Height  = 36,
+    Columns = 2,    -- number of columns (default 2)
+    Gap     = 6,    -- pixel gap between columns (default 6)
+    Height  = 36,   -- row height in pixels (default 36)
 })
 
-row.Add(tab:CreateButton({ Text = "Start" }))
-row.Add(tab:CreateToggle({ Text = "Loop" }))
+row.Add(tab:CreateButton({ Text = "Enable" }))
+row.Add(tab:CreateButton({ Text = "Disable" }))
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Columns` | number | `2` | Number of equal-width columns |
-| `Gap` | number | `6` | Pixel gap between columns |
-| `Height` | number | `36` | Fixed row height in pixels |
+**`row.Add(element)`** — reparents the element's frame into the row container and resizes it to fill one column slot. The element remains in `tab.Elements` and retains its full standard API.
 
-**Methods:**
+**`row.Destroy()`** — calls `Destroy()` on all child elements, then destroys the row frame.
 
-| Method | Description |
-|---|---|
-| `row.Add(element)` | Reparents an element's frame into the row and resizes it to fill one column. The element remains in `Tab.Elements` and keeps its full API. |
-
-**Destroy propagation:** `row.Destroy()` calls `Destroy()` on all child elements added via `row.Add()`, then destroys the row frame itself.
-
-> **Warning:** Expandable elements (Dropdown, SearchDropdown, MultiSelect, ColorPicker) will clip their expanded panels at the row's fixed height. Use rows for flat elements like buttons, toggles, sliders, labels, and section headers only.
-
-```lua
--- Three-column row example
-local row = tab:CreateRow({ Columns = 3, Gap = 4, Height = 36 })
-row.Add(tab:CreateButton({ Text = "A", Callback = function() end }))
-row.Add(tab:CreateButton({ Text = "B", Callback = function() end }))
-row.Add(tab:CreateButton({ Text = "C", Callback = function() end }))
-```
+> ⚠ **Expandable elements inside rows clip** at the row height. Dropdown, SearchDropdown, MultiSelect, and ColorPicker expanded panels will be hidden. Use these in regular (non-row) positions.
 
 ---
 
 ## 7. Notifications
 
-### Config
+### Shared (Aurora-level)
 
 ```lua
 Aurora:Notify({
     Title    = "Done",
-    Message  = "All seeds purchased.",
-    Type     = "Success",
-    Duration = 4,
-})
-
--- Per-window scope:
-win:Notify({
-    Title   = "Shop",
-    Message = "Item unavailable.",
-    Type    = "Warning",
+    Message  = "Operation complete.",
+    Type     = "Success",    -- "Info" | "Success" | "Warning" | "Error"
+    Duration = 4,            -- seconds until auto-dismiss (default 3)
 })
 ```
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `Title` | string | `"Notification"` | Bold heading text |
-| `Message` | string | `""` | Body text (wraps) |
-| `Type` | string | `"Info"` | One of: `"Info"` · `"Success"` · `"Warning"` · `"Error"` |
-| `Duration` | number | `3` | Seconds before the toast auto-dismisses |
+### Per-window
 
-### Scoping
+```lua
+win:Notify({
+    Title   = "Shop",
+    Message = "Purchased 3 seeds.",
+    Type    = "Info",
+})
+```
 
-- **`Aurora:Notify()`** — uses a lazily-created shared singleton `ScreenGui` in `PlayerGui`. Re-created if the ScreenGui is destroyed (e.g. on character respawn). All calls from all scripts share one stack.
-- **`win:Notify()`** — each window creates its own notification layer on first use. Multiple windows never interfere.
+Each window has its own notification layer. Two windows can never corrupt each other's toast stacks. `Aurora:Notify()` uses a shared singleton layer.
 
-### Visual
+### Appearance
 
-Each toast is a `280 × 80px` frame:
-- A 4px left accent bar in the type colour
-- Title in `Text` colour (bold, 14px)
-- Message in `TextMuted` colour (13px, wraps)
-- A 2px progress bar at the bottom that depletes over `Duration` seconds (linear tween)
-
-Toasts slide in from the right (Quart/Out, 0.4s) and slide out to the right (Quart/In, 0.35s). Remaining toasts reposition when one is dismissed (0.25s tween).
+- 280×80px frame anchored to the bottom-right of the screen
+- Coloured accent bar on the left edge matching the `Type`
+- Progress bar along the bottom shrinks over `Duration` seconds
+- Slides in from the right (Quart easing, 0.4s), slides out to the right (Quart, 0.35s)
+- Multiple notifications stack upward with 8px gaps and reposition when one is dismissed
+- The shared layer is lazily created and re-created automatically if its `ScreenGui` is ever destroyed
 
 ---
 
@@ -802,116 +723,144 @@ Toasts slide in from the right (Quart/Out, 0.4s) and slide out to the right (Qua
 
 ### Default theme
 
-| Key | Default RGB | Usage |
-|---|---|---|
-| `Primary` | `88, 101, 242` | Buttons, active tab, slider fill, toggle on, section headers, keybind button |
-| `Secondary` | `30, 30, 35` | (reserved) |
-| `Background` | `18, 18, 22` | Main window, element cards |
-| `Surface` | `25, 25, 30` | Title bar, tab sidebar, content container, dropdown panels |
-| `Text` | `245, 245, 250` | Primary readable text |
-| `TextMuted` | `150, 150, 160` | Secondary text, placeholders, inactive tabs, label text |
-| `Success` | `46, 204, 113` | Success notifications and status labels |
-| `Warning` | `241, 196, 15` | Warning notifications and status labels |
-| `Error` | `231, 76, 60` | Error notifications and status labels, close button |
-| `Border` | `55, 55, 68` | Section lines, scroll bar, disabled overlay, slider track |
-| `Glow` | `88, 101, 242` | Shadow tint under windows and notifications |
+```lua
+Aurora.Config.Theme = {
+    Primary    = Color3.fromRGB(88,  101, 242),   -- accent, active states, buttons
+    Secondary  = Color3.fromRGB(30,  30,  35),    -- secondary surface
+    Background = Color3.fromRGB(18,  18,  22),    -- main window background
+    Surface    = Color3.fromRGB(25,  25,  30),    -- cards, tab bar, panels
+    Text       = Color3.fromRGB(245, 245, 250),   -- primary text
+    TextMuted  = Color3.fromRGB(150, 150, 160),   -- secondary/hint text
+    Success    = Color3.fromRGB(46,  204, 113),   -- green status
+    Warning    = Color3.fromRGB(241, 196,  15),   -- yellow status
+    Error      = Color3.fromRGB(231,  76,  60),   -- red status
+    Border     = Color3.fromRGB(55,   55,  68),   -- dividers, scroll bars
+    Glow       = Color3.fromRGB(88,  101, 242),   -- shadow/glow tint
+}
+```
 
-### Default animation
+### Animation settings
 
-| Key | Value |
-|---|---|
-| `Duration` | `0.3` seconds |
-| `Easing` | `Enum.EasingStyle.Quart` |
-| `Direction` | `Enum.EasingDirection.Out` |
+```lua
+Aurora.Config.Animation = {
+    Duration  = 0.3,                      -- default tween duration (seconds)
+    Easing    = Enum.EasingStyle.Quart,
+    Direction = Enum.EasingDirection.Out,
+}
+```
 
-### Default fonts
+### Font & geometry
 
-| Key | Value |
-|---|---|
-| `Font` | `Enum.Font.Gotham` |
-| `FontBold` | `Enum.Font.GothamBold` |
-| `FontMedium` | `Enum.Font.GothamMedium` |
-| `CornerRadius` | `UDim.new(0, 6)` |
-| `ShadowTransparency` | `0.7` |
+```lua
+Aurora.Config.Font             = Enum.Font.Gotham
+Aurora.Config.FontBold         = Enum.Font.GothamBold
+Aurora.Config.FontMedium       = Enum.Font.GothamMedium
+Aurora.Config.CornerRadius     = UDim.new(0, 6)
+Aurora.Config.ShadowTransparency = 0.7
+```
+
+### Changing the theme
+
+```lua
+Aurora:SetTheme({
+    Primary = Color3.fromRGB(255, 80, 80),
+})
+```
+
+> Only elements created **after** this call use the new values. Use `Aurora:SetTheme` before calling `CreateWindow` if you want the whole UI to use a custom palette.
 
 ---
 
 ## 9. Config System
 
-The config system persists element values to JSON files on disk using the executor's file API. It supports multiple named profiles, last-profile memory across sessions, import/export, and an optional built-in UI panel.
+The config system persists element values to JSON files using the executor's file API. It supports named profiles, last-profile memory across sessions, import/export, and an optional built-in UI panel.
 
-### Setup
+### Creating a config
 
 ```lua
 local cfg = Aurora:CreateConfig({
-    Name     = "GardenShovel",
-    Folder   = "Aurora",
-    AutoSave = true,
-    AutoLoad = true,
+    Name     = "GardenShovel",   -- filename stem
+    Folder   = "Aurora",         -- subfolder in executor workspace
+    AutoSave = true,             -- save on every user interaction
+    AutoLoad = true,             -- restore saved values on creation
 })
 ```
 
-### Options
-
-| Key | Type | Default | Description |
+| Option | Type | Default | Description |
 |---|---|---|---|
-| `Name` | string | `"Config"` | Filename stem. Saved as `Name.json` for the default profile, `Name_pvp.json` for a "pvp" profile, etc. |
-| `Folder` | string | `"Aurora"` | Subfolder in the executor workspace. Created automatically if missing. |
-| `Profile` | string | `"default"` | Starting profile. Overridden by the last-profile sidecar if `AutoLoad = true`. |
-| `AutoSave` | bool | `true` | Automatically saves to disk whenever any linked element fires `OnChanged`. |
-| `AutoLoad` | bool | `true` | Reads the last-profile sidecar at creation time, switches to that profile, and loads its saved values into a cache **before** any `Link()` calls. |
+| `Name` | string | `"Config"` | Filename stem. Profiles are stored as `Name.json`, `Name_pvp.json`, etc. |
+| `Folder` | string | `"Aurora"` | Subfolder in executor workspace. Created automatically if missing |
+| `Profile` | string | `"default"` | Starting profile name. Overridden by the last-profile sidecar if `AutoLoad` is true |
+| `AutoSave` | boolean | `true` | Automatically save to disk on every `OnChanged` event from any linked element |
+| `AutoLoad` | boolean | `true` | On creation, load the last-used profile's data and silently apply it to all linked elements |
 
 ### Linking elements
 
 ```lua
-cfg:Link("Speed",     speedSlider)
-cfg:Link("GodMode",   godModeToggle)
-cfg:Link("Color",     colorPicker)
-cfg:Link("Webhook",   webhookInput)
-
--- Chainable:
-cfg:Link("A", elemA):Link("B", elemB):Link("C", elemC)
+cfg:Link("GodMode",  godModeToggle)
+   :Link("Speed",    speedSlider)
+   :Link("Color",    colorPicker)
+   :Link("Webhook",  webhookInput)
 ```
 
-`Link(key, element)`:
-1. Snapshots the element's current value as its reset default
-2. Applies any cached saved value silently via `SetValue` (so `Callback` never fires on load)
-3. Wires `element.OnChanged → doSave` if `AutoSave = true`
+`Link` is chainable. Each call:
+1. Snapshots the element's current value as its **reset default**
+2. Silently applies the cached saved value (if `AutoLoad` loaded one) via `SetValue`
+3. Wires the element's `OnChanged` signal to auto-save if `AutoSave` is on
 
-### Config object API
+**What to link:** any value the user would want to persist between sessions.
 
-| Method / Signal | Description |
-|---|---|
-| `cfg:Link(key, element)` | Link an element. Returns `self` for chaining. |
-| `cfg:Save()` | Manually write current values to disk. Returns `self`. |
-| `cfg:Load()` | Manually read values from disk and apply via `SetValue`. Returns `true` if the file was found. |
-| `cfg:Reset()` | Restore all elements to their `Link`-time defaults. Clears the save file. Returns `self`. |
-| `cfg:Export()` | Serialise current values to a JSON string. |
-| `cfg:Import(str)` | Deserialise and apply values from a JSON string. Saves if `AutoSave = true`. Returns `true` on success, `false` on invalid JSON. |
-| `cfg:SetProfile(name)` | Switch to a named profile. Loads its values, saves the choice to the last-profile sidecar, fires `OnProfileChanged`. Returns `self`. |
-| `cfg:GetProfile()` | Returns the active profile name as a string. |
-| `cfg:ListProfiles()` | Returns `string[]` of all discovered profile names (requires `listfiles` executor API). Always includes `"default"`. |
-| `cfg:RenameProfile(newName)` | Rename the active profile. Copies the save file to the new name, deletes the old file. Returns `false` if: name is taken, name is empty, active profile is `"default"`. |
-| `cfg:DeleteProfile(name)` | Delete a profile file. Switches to `"default"` if the deleted profile was active. Returns `false` if name is `"default"`. |
-| `cfg:NextProfileName()` | Returns the next available auto-name: `"Profile 1"`, `"Profile 2"`, etc. |
-| `cfg:HasStorage()` | Returns `true` if the executor exposes `writefile` / `readfile`. |
-| `cfg:CreateControls(tab)` | Inject the built-in profile/import/export UI into a tab. |
-| `cfg.OnSave` | Signal. Fires after each save. |
-| `cfg.OnLoad` | Signal. Fires after each load. |
-| `cfg.OnReset` | Signal. Fires after reset. |
-| `cfg.OnProfileChanged` | Signal. Fires with `(profileName)` whenever `SetProfile` is called. |
+**What not to link:** running state toggles (e.g. "Auto Farm is currently ON"), or values that depend on live game data that should be freshly computed each session.
 
-### File layout
+### File layout on disk
 
 ```
 Aurora/
-  GardenShovel.json                 ← default profile
-  GardenShovel_pvp.json             ← "pvp" profile
-  GardenShovel_harvest.json         ← "harvest" profile
-  GardenShovel_lastProfile.txt      ← contains e.g. "pvp"
+  GardenShovel.json                -- "default" profile
+  GardenShovel_pvp.json            -- "pvp" profile
+  GardenShovel_harvest.json        -- "harvest" profile
+  GardenShovel_lastProfile.txt     -- contains "pvp" (persists across sessions)
 ```
 
-Profile names are encoded in the filename stem after the `_`. The default profile has no suffix. The last-profile sidecar always uses `Name_lastProfile.txt`.
+### Config object API
+
+```lua
+-- Persistence
+cfg:Save()              -- → self  write current values to disk
+cfg:Load()              -- → bool  read from disk, apply silently. Returns true if file found
+cfg:Reset()             -- → self  restore all elements to their Link-time defaults, clear save file
+
+-- Serialisation
+cfg:Export()            -- → string  serialise current values to a JSON string
+cfg:Import(str)         -- → bool    apply values from a JSON string. Saves if AutoSave on
+
+-- Profiles
+cfg:SetProfile(name)    -- → self    switch to a named profile, load its data, persist choice
+cfg:GetProfile()        -- → string  returns the active profile name
+cfg:ListProfiles()      -- → string[] all discovered profile names (requires listfiles API)
+cfg:RenameProfile(new)  -- → bool    rename active profile. Fails if name is taken or profile is "default"
+cfg:DeleteProfile(name) -- → bool    delete profile file. Switches to "default" if active. Cannot delete "default"
+cfg:NextProfileName()   -- → string  returns next available auto-name: "Profile 1", "Profile 2", …
+cfg:HasStorage()        -- → bool    true if executor file API is available
+
+-- Signals
+cfg.OnSave             -- fires after each successful save
+cfg.OnLoad             -- fires after each successful load
+cfg.OnReset            -- fires after reset
+cfg.OnProfileChanged   -- fires(profileName) whenever SetProfile is called
+```
+
+### `RenameProfile` rules
+
+- Cannot rename the `"default"` profile
+- Will fail (return `false`) if the target name is already used by another profile
+- Copies the save file to the new name, deletes the old file, updates the active profile and sidecar atomically
+
+### `DeleteProfile` rules
+
+- Cannot delete `"default"`
+- If the active profile is deleted, automatically switches to `"default"`
+- Uses `deletefile` with a fallback to `delfile` (executor variation), then verifies the file is gone via `isfile`. Returns `true` only if the file was actually removed
 
 ### Built-in UI (`CreateControls`)
 
@@ -919,159 +868,249 @@ Profile names are encoded in the filename stem after the `_`. The default profil
 cfg:CreateControls(configTab)
 ```
 
-Injects the following into `configTab` — no extra code needed:
+Injects these elements into the given tab — no additional code needed:
 
-```
-Profile
-  [Selected Profile ▼]           ← dropdown, all profiles listed
-  [Create New Profile]            ← button, auto-names "Profile 1", "Profile 2"…
-  [Rename Current Profile    ]    ← input, press Enter
-  [Delete Current Profile]        ← button, protected against deleting "default"
+- **Selected Profile** dropdown — click to switch. Auto-refreshes when profiles are added/deleted/renamed
+- **Create New Profile** button — auto-names `"Profile 1"`, `"Profile 2"`, etc., seeds with current values, switches immediately
+- **Rename Current Profile** input — type new name, press Enter. Protected: cannot rename `"default"`, cannot rename to a name that already exists
+- **Delete Current Profile** button — protected: cannot delete `"default"`, notifies on success or failure
+- **Export to Clipboard** / **Export (console)** button — copies JSON to clipboard if available, otherwise prints to console
+- **Import Config** input — paste JSON and press Enter
+- **Reset to Defaults** button — restores Link-time defaults
 
-Import / Export
-  [Export to Clipboard]           ← copies JSON; falls back to console print
-  [Import Config             ]    ← input, paste JSON and press Enter
-  [Reset to Defaults]
-```
-
-The profile dropdown is kept in sync automatically: creating a profile calls `SetOptions(listProfiles())` + `SetValue(newName)`, and so does deleting.
+> The entire section is omitted if `HAS_FILE_API` is false (executor has no file API). Only the import/export/reset section is shown in that case, since those work without a filesystem.
 
 ### Executor API detection
 
 The config system detects available executor APIs at load time:
 
-| Flag | Condition |
+| Flag | Checks for |
 |---|---|
-| `HAS_FILE_API` | `writefile` and `readfile` are functions |
-| `HAS_FOLDER_API` | `makefolder` is a function |
-| `HAS_LIST_FILES` | `listfiles` is a function |
-| `HAS_DELETE` | `deletefile` or `delfile` is a function |
-| `HAS_CLIPBOARD` | `setclipboard` is a function |
+| `HAS_FILE_API` | `writefile` |
+| `HAS_FOLDER_API` | `makefolder` |
+| `HAS_LIST_FILES` | `listfiles` |
+| `HAS_DELETE` | `deletefile` or `delfile` |
+| `HAS_CLIPBOARD` | `setclipboard` |
 
-If `HAS_FILE_API` is false, the config system operates in-memory only. `CreateControls` shows a Warning status label. No profile UI is shown.
+All features gracefully degrade. If `HAS_LIST_FILES` is false, the profile dropdown will only show the active profile rather than all discovered ones.
 
-`deletefile` is tried first; if unavailable, `delfile` is used. After deletion, `isfile` is called to verify the file is actually gone before returning success.
+### Full integration example
 
-### What should not be saved
+```lua
+local Window    = Aurora:CreateWindow({ Title = "Garden Shovel" })
+local ShovelTab = Window:CreateTab({ Name = "Shovel" })
+local ConfigTab = Window:CreateTab({ Name = "Config" })
 
-Do not link:
-- Elements whose values are rebuilt from live game data on each run (e.g. a plant type selector populated from the current garden)
-- Running-state toggles (e.g. "Auto Farm is currently active") that should always start `false`
+local cfg = Aurora:CreateConfig({
+    Name     = "GardenShovel",
+    Folder   = "Aurora",
+    AutoSave = true,
+    AutoLoad = true,
+})
+
+-- ...create your elements...
+
+-- Link everything (call after elements are created)
+cfg:Link("Shovel_FruitTypes",   fruitMultiSelect)
+   :Link("Shovel_MaxWeight",    maxWeightInput)
+   :Link("Settings_Webhook",    webhookInput)
+
+-- Add built-in config UI
+cfg:CreateControls(ConfigTab)
+
+-- React to profile switches in your own code if needed
+cfg.OnProfileChanged:Connect(function(profileName)
+    print("Switched to profile:", profileName)
+end)
+```
 
 ---
 
-## 10. Signal
+## 10. Signals
 
-Aurora uses a lightweight built-in Signal class. All `OnChanged`, `OnTabChanged`, `OnRowClicked`, `OnElementAdded`, and config signals use this system.
+Aurora uses a lightweight built-in `Signal` class. All `OnChanged`, `OnRowClicked`, window/tab signals, and config signals use this system.
+
+### API
 
 ```lua
 local s = Signal.new()
 
--- Connect (persists until disconnected)
-local conn = s:Connect(function(value)
-    print("received:", value)
+-- Connect a persistent handler
+local conn = s:Connect(function(...)
+    print(...)
 end)
+conn.Disconnect()   -- unsubscribe
 
--- Once (auto-disconnects after first fire; returns handle to cancel early)
-local onceConn = s:Once(function(value)
-    print("received once:", value)
+-- Connect a one-shot handler (auto-disconnects after first fire)
+local conn = s:Once(function(...)
+    print("fired once")
 end)
-onceConn.Disconnect()   -- cancel before it fires
+conn.Disconnect()   -- can also cancel before it fires
 
--- Fire
-s:Fire(42)
-
--- Disconnect
-conn.Disconnect()
+-- Fire the signal
+s:Fire(value1, value2, ...)
 ```
 
-If a callback errors, the error is `warn`-ed with `[Aurora Signal] Callback error: ...` and the remaining handlers continue to fire.
+### Error handling
 
-Signals do not support `Wait()`. Use `task.wait()` patterns or `Once()` with a coroutine if you need to yield.
+Signal callbacks are called via `pcall`. A runtime error inside a callback prints a warning (`[Aurora Signal] Callback error: ...`) but does **not** break other handlers or the calling code.
+
+### Signal ordering
+
+Handlers fire in **insertion order** (by connection ID). There is no priority system.
 
 ---
 
-## 11. Internals & Architecture
+## 11. ConnSet
 
-### Key guarantees
+`ConnSet` is the connection ownership system used throughout Aurora for clean teardown. Each element gets its own `ConnSet`; each window has one for window-level connections.
 
-**SetValue is always silent.** Every element's `SetValue` function updates internal state and the display without calling `Callback` or firing `OnChanged`. This prevents circular loops when the config system loads saved values. The only exceptions are display-only elements where `SetValue` is the only change mechanism: `Label`, `StatusLabel`, `ProgressBar`.
+```lua
+local cs = ConnSet.new()
 
-**Tab prototype.** All 16 `Create*` methods are defined once on `Tab.__index`. Creating 100 tabs allocates exactly the same number of method closures as creating 1.
+-- Track a connection (returns the connection for inline use)
+cs:Add(UserInputService.InputChanged:Connect(fn))
 
-**ConnSet.** Each element has its own `ConnSet` (a hash-keyed set of RBXScriptConnections). Global UIS connections (slider drag, keybind listening) go into the element's ConnSet rather than a window-level array. `element.Destroy()` calls `ConnSet:DisconnectAll()` immediately. `Window:Destroy()` iterates `tab._elementConnSets` and disconnects all of them. No connection can appear twice (hash key deduplication).
+-- Disconnect and stop tracking one connection
+cs:Remove(someConn)
 
-**Expandable base.** Dropdown, SearchDropdown, MultiSelect, and ColorPicker all use `Expandable.makeExpandable(frame, collapsedH, getExpandedH, arrowLabel?)`. One implementation drives the tween, the arrow rotation, and the global collapse registry (`_registry`). `SetEnabled(false)` calls `Expandable.tryCollapse(frame)` to collapse any open expandable before locking it.
-
-**Tween cancellation.** `Utility.Tween(inst, props, duration, ...)` checks `_activeTweens[inst]` and cancels any in-flight tween on the same instance before creating a new one. This prevents animation jitter when rapidly toggling elements.
-
-**Notification scoping.** Each `Notification.createLayer(guiParent)` creates a fully independent queue + ScreenGui. The shared singleton (`Aurora:Notify`) is lazily created and re-created if its ScreenGui is destroyed. `win:Notify()` creates a per-window layer on first call.
-
-### Module build order
-
-```
-Signal
-  └─ Config
-       └─ ConnSet
-            └─ Utility
-                 └─ Expandable
-                      └─ [16 element modules]
-                           └─ Tab
-                                └─ Notification
-                                     └─ Window
-                                          └─ ConfigSystem
-                                               └─ Aurora (init)
+-- Disconnect every tracked connection at once
+cs:DisconnectAll()
 ```
 
-Each module is wrapped in `local Name = (function() ... end)()`. Earlier locals are in scope as upvalues for later modules — no explicit dependency injection needed.
+`ConnSet` uses a hash-keyed set internally — `Add`, `Remove`, and `DisconnectAll` are all O(1) regardless of set size.
 
-### Element frame heights (px)
-
-| Element | Height |
-|---|---|
-| Button | 36 |
-| Toggle | 36 |
-| Slider | 50 |
-| Dropdown | 36 (collapsed), 36 + N×30 (expanded) |
-| SearchDropdown | 36 (collapsed), 36 + min(N,MaxVisible)×30 + 36 (expanded) |
-| MultiSelect | 36 (collapsed), 36 + N×30 (expanded) |
-| Input | 54 |
-| NumberInput | 54 |
-| Keybind | 36 |
-| ColorPicker | 36 (collapsed), 148 (expanded) |
-| Label | 22 |
-| Section | 28 |
-| ProgressBar | 46 |
-| StatusLabel | 24 |
-| Table | Varies (row count × 30 + header) |
-| Row | Configurable (default 36) |
-
-Tab content padding: `10px` top/bottom, `10px` left, `12px` right. Gap between elements: `8px`.
+> You generally don't need to use `ConnSet` directly. It's used internally by `Tab:RegisterElement` for each element, and by the Window for its drag and reflow connections. The element's `_conns` field exposes it if you need to add your own cleanup logic.
 
 ---
 
-## 12. Build System
+## 12. Advanced: Custom Elements
 
-Aurora ships as a single `Aurora.lua` but is developed across 26 source modules in `src/`.
+`Tab:BaseFrame` and `Tab:RegisterElement` are the two internal methods that all 16 built-in elements use. You can use them directly to integrate a completely custom element into Aurora.
 
-### Running a build
+### `Tab:BaseFrame(height)`
+
+Creates a standard-sized `Frame` parented to the tab's `ScrollingFrame` with the correct background colour and rounded corners. Returns the frame.
+
+```lua
+local frame = tab:BaseFrame(36)   -- 36px tall, parented to tab content
+```
+
+### `Tab:RegisterElement(element, frame, elementConns?)`
+
+Registers any table as an Aurora element. Injects the standard API (`Destroy`, `SetVisible`, `SetEnabled`) and adds the element to `tab.Elements`. Fires `tab.OnElementAdded`.
+
+| Argument | Type | Description |
+|---|---|---|
+| `element` | table | Your element table. Can have any fields; `GetValue`, `SetValue`, `OnChanged` are conventional |
+| `frame` | Instance | The root frame. `SetVisible`, `SetEnabled`, and `Destroy` all operate on this |
+| `elementConns` | ConnSet? | Optional `ConnSet` for UserInputService connections. Gets disconnected on `Destroy()` and on `Window:Destroy()`. If omitted, a new empty `ConnSet` is created |
+
+Returns the `element` table with the injected standard API fields added to it.
+
+```lua
+-- Minimal custom element example
+return function(self, cfg)
+    cfg = cfg or {}
+    local value = cfg.Default or ""
+    local OnChanged = Signal.new()
+
+    local frame = self:BaseFrame(36)
+
+    -- ... build your Roblox instances inside frame ...
+
+    local elementConns = ConnSet.new()
+    elementConns:Add(UserInputService.InputBegan:Connect(function(inp)
+        -- your UIS logic
+    end))
+
+    return self:RegisterElement({
+        OnChanged = OnChanged,
+        GetValue  = function() return value end,
+        SetValue  = function(v)
+            value = v
+            -- update UI silently
+        end,
+    }, frame, elementConns)
+end
+```
+
+Then assign it to the Tab prototype in `src/Tab.lua`:
+```lua
+Tab.CreateMyElement = require("src/elements/MyElement.lua")
+```
+
+And add it to `build_manifest.json` in the `elements` array before running `python3 build.py`.
+
+---
+
+## 13. Architecture & Internals
+
+### Module dependency order
+
+```
+Signal → Config → ConnSet → Utility → Expandable
+→ Button, Toggle, Slider, Dropdown, SearchDropdown,
+  MultiSelect, Input, NumberInput, Keybind, ColorPicker,
+  Label, Section, ProgressBar, StatusLabel, Table, Row
+→ Tab → Notification → Window → ConfigSystem → Aurora (init)
+```
+
+Each module is wrapped in an IIFE: `local Name = (function() ... end)()`. Modules earlier in this chain are available as upvalues to modules that come after — no explicit dependency injection.
+
+### Tab prototype
+
+All 16 `Create*` methods are assigned to `Tab.__index` once. Creating 100 tabs allocates the same number of closures as creating 1 tab.
+
+### Expandable base (`Expandable.lua`)
+
+`Dropdown`, `SearchDropdown`, `MultiSelect`, and `ColorPicker` all use `Expandable.makeExpandable(frame, collapsedH, getExpandedH, arrowLabel?)` rather than each implementing their own expand/collapse logic. This provides:
+
+- A single `_registry` (weak-keyed) mapping frames to their `collapse()` function
+- `tryCollapse(frame)` — called by `SetEnabled(false)` to auto-collapse any expandable element
+- Tween cancellation: `Utility.Tween` is used for all expand/collapse animations, and competing tweens on the same instance are cancelled automatically
+
+### Tween cancellation
+
+`Utility.Tween(inst, props, duration, ...)` maintains an `_activeTweens[inst]` registry. Before starting a new tween, any in-flight tween on the same instance is cancelled. This prevents competing-tween pile-up on elements driven rapidly (e.g. a `ProgressBar` updated every frame).
+
+### Forward reference pattern
+
+Expandable elements have a local `exp` declared before their option buttons are created, then assigned after. This is required because Lua closures capture upvalue **slots** at closure creation time. If `exp` were declared after the closures that reference `exp.toggle()` / `exp.collapse()`, those closures would capture `nil`.
+
+```lua
+local exp    -- declared here: slot is valid
+-- ... create buttons that reference exp.toggle(), exp.collapse() ...
+exp = Expandable.makeExpandable(...)   -- assigned after: closures now resolve correctly
+```
+
+### SetValue silent contract (detailed)
+
+Every interactive element has two internal paths:
+
+- **User path** (`applyFromInput`, `applyUI(false)`, etc.): fires `Callback` and `OnChanged`
+- **Silent path** (`SetValue` → `applyUI(true)` etc.): updates only the UI, never fires callbacks
+
+This design means `ConfigSystem:Load()` can call `element.SetValue(savedValue)` on every linked element without triggering a cascade of `OnChanged` → `AutoSave` → `Save()` calls.
+
+---
+
+## 14. Building from Source
+
+The source lives in `src/` as 26 separate `.lua` files. `build.py` wraps each in an IIFE and concatenates them in topological dependency order.
 
 ```bash
+# Standard build → Aurora.lua
 python3 build.py
+
+# Custom output path
+python3 build.py --out dist/Aurora.lua
+
+# Strip comments and blank lines
+python3 build.py --minify
 ```
 
-Output: `Aurora.lua`
-
-### Build manifest
-
-`build_manifest.json` defines the module list and order. The builder:
-
-1. Reads each file in order
-2. Wraps it in `local ModuleName = (function() ... end)()`
-3. Concatenates all modules
-4. Writes the version header and timestamp
-
-### Source file structure
+### Source file tree
 
 ```
 src/
@@ -1104,16 +1143,29 @@ src/
     Row.lua
 ```
 
-### Adding a new element
-
-1. Create `src/elements/YourElement.lua`. It must return a function `(self, cfg)` where `self` is the Tab.
-2. Call `self:RegisterElement({ ... }, frame)` at the end and return the result.
-3. Add the module to `build_manifest.json` in the elements section.
-4. Assign it in `src/Tab.lua`: `Tab.CreateYourElement = _YourElement`
-5. Run `python3 build.py`.
-
-The element automatically receives `SetEnabled`, `SetVisible`, `Destroy`, and `Frame` from `RegisterElement`. You only need to implement `GetValue`, `SetValue`, and `OnChanged` (plus any extra methods specific to your element).
-
 ---
 
-*Aurora v7.0 — March 2026*
+## 15. Suggested Improvements
+
+### Library
+
+| Idea | Notes |
+|---|---|
+| **Theme hot-reload** | `SetTheme` currently only affects future elements. A `RefreshTheme()` that patches all live instances would make runtime theme switching fully work |
+| **Tab icons rendered** | The `Icon` field in `CreateTab` is stored but the `ImageLabel` uses it as an asset ID — confirm correct asset IDs are being passed |
+| **Searchable MultiSelect** | Same live-filter as `SearchDropdown` but with checkboxes |
+| **Toast queue cap** | Cap visible notifications at N (e.g. 4); queue the rest and show them as earlier ones dismiss |
+| **Element groups** | `Group:SetEnabled(false)` / `Group:SetVisible(false)` collapses a set of elements together — useful for hiding advanced options behind a toggle |
+| **Slider + text input hybrid** | Drag OR type a value; both sides stay in sync |
+| **Window resize handle** | Drag the bottom-right corner to resize freely |
+| **`onDestroy` callback** | `window.OnDestroy` signal for consuming scripts to clean up their own state |
+
+### Config System
+
+| Idea | Notes |
+|---|---|
+| **Profile duplication** | "Duplicate Current Profile" — clones the active profile's file to a new name |
+| **Profile descriptions** | Store a short note string alongside each profile; show it as a subtitle in the dropdown |
+| **Config versioning** | Embed a `_version` key in the JSON so `Import` can warn when loading from an incompatible schema after a script update |
+| **`listfiles` fallback** | If `listfiles` is unavailable, probe for known filenames using `isfile` so the dropdown still discovers all profiles on rejoin |
+| **Per-key defaults** | Allow `Link("key", el, customDefault)` to override the snapshot default independently of the element's current value at link time |
