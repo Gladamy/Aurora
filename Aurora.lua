@@ -5,7 +5,6 @@
 local Aurora = {}
 local TweenService     = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local HttpService      = game:GetService("HttpService")
 local Players          = game:GetService("Players")
 local LocalPlayer      = Players.LocalPlayer
 
@@ -125,367 +124,6 @@ local function AddShadow(parent, intensity)
         SliceCenter           = Rect.new(49, 49, 450, 450),
         ZIndex                = parent.ZIndex - 1,
     })
-end
-
--- ─────────────────────────────────────────────
---  ConfigService (filesystem-backed)
--- ─────────────────────────────────────────────
-
-local function _hasFn(name)
-    local v = rawget(getfenv and getfenv(0) or _G, name)
-    return type(v) == "function"
-end
-
-local FS = {
-    ok         = _hasFn("writefile") and _hasFn("readfile") and _hasFn("isfile"),
-    writefile  = _hasFn("writefile")  and writefile  or nil,
-    readfile   = _hasFn("readfile")   and readfile   or nil,
-    isfile     = _hasFn("isfile")     and isfile     or nil,
-    makefolder = _hasFn("makefolder") and makefolder or nil,
-    listfiles  = _hasFn("listfiles")  and listfiles  or nil,
-    delfile    = _hasFn("delfile")    and delfile    or nil,
-}
-
-local function _safeCall(fn, ...)
-    if not fn then return false end
-    local ok, res = pcall(fn, ...)
-    if not ok then return false end
-    return true, res
-end
-
-local function _pathJoin(a, b)
-    if a:sub(-1) == "/" then return a .. b end
-    return a .. "/" .. b
-end
-
-local function _sanitizeName(name)
-    name = tostring(name or "")
-    name = name:gsub("[\\/:*?\"<>|]", "_")
-    name = name:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
-    if name == "" then name = "default" end
-    return name
-end
-
-local function _colorToHex(c)
-    return string.format("#%02X%02X%02X", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
-end
-
-local function _hexToColor(hex)
-    if type(hex) ~= "string" then return nil end
-    hex = hex:gsub("#", "")
-    if #hex ~= 6 then return nil end
-    local r = tonumber(hex:sub(1, 2), 16)
-    local g = tonumber(hex:sub(3, 4), 16)
-    local b = tonumber(hex:sub(5, 6), 16)
-    if not (r and g and b) then return nil end
-    return Color3.fromRGB(r, g, b)
-end
-
-local function _encodeValue(v)
-    local t = typeof(v)
-    if t == "boolean" or t == "number" or t == "string" then
-        return v
-    end
-    if t == "Color3" then
-        return _colorToHex(v)
-    end
-    if t == "EnumItem" then
-        -- primarily for Enum.KeyCode
-        return tostring(v) -- "Enum.KeyCode.RightShift"
-    end
-    if t == "table" then
-        -- MultiSelect returns array of strings; keep arrays as-is if JSON encodable
-        return v
-    end
-    return nil
-end
-
-local function _decodeValue(raw, hint)
-    -- hint is optional; used when we can infer element value type
-    if hint == "Color3" then
-        return _hexToColor(raw)
-    end
-    if hint == "Enum.KeyCode" then
-        if type(raw) == "string" then
-            local name = raw:gsub("^Enum%.KeyCode%.", "")
-            local item = Enum.KeyCode[name]
-            if item then return item end
-        end
-        return nil
-    end
-    return raw
-end
-
-function Aurora:CreateConfig(cfg)
-    cfg = cfg or {}
-    local appName = tostring(cfg.AppName or cfg.Name or "AuroraApp")
-    local folder  = tostring(cfg.Folder or "Aurora/Configs")
-    local defaultConfigName = tostring(cfg.Default or "default")
-    local autosave = cfg.AutoSave == true
-    local debounce = tonumber(cfg.Debounce or 1) or 1
-
-    local appFolder = _pathJoin(folder, _sanitizeName(appName))
-
-    local bound = {}        -- key -> { element=..., hint=..., conn=... }
-    local autosaveName = defaultConfigName
-    local pendingSave = false
-    local lastDirtyAt = 0
-
-    local function ensureFolders()
-        if not FS.ok then return false end
-        if FS.makefolder then
-            _safeCall(FS.makefolder, folder)
-            _safeCall(FS.makefolder, appFolder)
-        end
-        return true
-    end
-
-    local function configPath(name)
-        return _pathJoin(appFolder, _sanitizeName(name) .. ".json")
-    end
-
-    local function snapshotValues()
-        local values = {}
-        for key, info in pairs(bound) do
-            local el = info.element
-            if el and el.GetValue then
-                local ok, v = pcall(el.GetValue)
-                if ok then
-                    local enc = _encodeValue(v)
-                    if enc ~= nil then
-                        values[key] = enc
-                    end
-                end
-            end
-        end
-        return values
-    end
-
-    local function writeConfig(name)
-        if not FS.ok then return false, "filesystem_unavailable" end
-        ensureFolders()
-        local payload = {
-            schema    = 1,
-            app       = appName,
-            aurora    = "6.5.0",
-            createdAt = os.time(),
-            values    = snapshotValues(),
-        }
-        local ok, json = pcall(HttpService.JSONEncode, HttpService, payload)
-        if not ok then return false, "json_encode_failed" end
-        local path = configPath(name)
-        local ok2 = _safeCall(FS.writefile, path, json)
-        if not ok2 then return false, "write_failed" end
-        return true
-    end
-
-    local function readConfig(name)
-        if not FS.ok then return false, "filesystem_unavailable" end
-        local path = configPath(name)
-        local okIs, exists = _safeCall(FS.isfile, path)
-        if not okIs or not exists then return false, "missing" end
-        local okRead, contents = _safeCall(FS.readfile, path)
-        if not okRead then return false, "read_failed" end
-        local okJson, decoded = pcall(HttpService.JSONDecode, HttpService, contents)
-        if not okJson or type(decoded) ~= "table" then return false, "json_decode_failed" end
-        if decoded.schema ~= 1 or type(decoded.values) ~= "table" then return false, "schema_mismatch" end
-        return true, decoded
-    end
-
-    local function applyValues(values, opts)
-        opts = opts or {}
-        local silent = opts.Silent == true
-        for key, raw in pairs(values or {}) do
-            local info = bound[key]
-            if info and info.element and info.element.SetValue then
-                local hint = info.hint
-                local val = _decodeValue(raw, hint)
-                if val ~= nil then
-                    pcall(info.element.SetValue, val, silent)
-                end
-            end
-        end
-    end
-
-    local function markDirty()
-        lastDirtyAt = tick()
-        if pendingSave then return end
-        pendingSave = true
-        task.spawn(function()
-            while pendingSave do
-                task.wait(0.05)
-                if tick() - lastDirtyAt >= debounce then
-                    pendingSave = false
-                    if autosave then
-                        writeConfig(autosaveName)
-                    end
-                end
-            end
-        end)
-    end
-
-    local Config = {}
-
-    function Config.Bind(element, key, opts)
-        key = tostring(key)
-        if key == "" then return false, "bad_key" end
-        if not element or type(element) ~= "table" or type(element.GetValue) ~= "function" or type(element.SetValue) ~= "function" then
-            return false, "bad_element"
-        end
-
-        -- Cleanup previous
-        if bound[key] and bound[key].conn and bound[key].conn.Disconnect then
-            bound[key].conn:Disconnect()
-        end
-
-        local hint = opts and opts.Hint
-        if not hint then
-            local ok, v = pcall(element.GetValue)
-            if ok then
-                local vt = typeof(v)
-                if vt == "Color3" then hint = "Color3"
-                elseif vt == "EnumItem" then hint = "Enum.KeyCode" end
-            end
-        end
-
-        local conn
-        if element.OnChanged and element.OnChanged.Connect then
-            conn = element.OnChanged:Connect(function()
-                markDirty()
-            end)
-        end
-
-        bound[key] = { element = element, hint = hint, conn = conn }
-        element._configKey = key
-        return true
-    end
-
-    function Config.Unbind(key)
-        key = tostring(key)
-        local info = bound[key]
-        if not info then return false end
-        if info.conn and info.conn.Disconnect then info.conn:Disconnect() end
-        if info.element then info.element._configKey = nil end
-        bound[key] = nil
-        return true
-    end
-
-    function Config.UnbindAll()
-        for k in pairs(bound) do
-            Config.Unbind(k)
-        end
-    end
-
-    function Config.SetAutoSave(on, name)
-        autosave = on == true
-        if name then autosaveName = tostring(name) end
-    end
-
-    function Config.Save(name)
-        return writeConfig(name or defaultConfigName)
-    end
-
-    function Config.Load(name, opts)
-        local ok, dataOrErr = readConfig(name or defaultConfigName)
-        if not ok then return false, dataOrErr end
-        applyValues(dataOrErr.values, opts)
-        return true
-    end
-
-    function Config.Delete(name)
-        if not (FS.ok and FS.delfile) then return false end
-        local path = configPath(name or defaultConfigName)
-        local ok = _safeCall(FS.delfile, path)
-        return ok == true
-    end
-
-    function Config.List()
-        if not (FS.ok and FS.listfiles) then return {} end
-        ensureFolders()
-        local ok, files = _safeCall(FS.listfiles, appFolder)
-        if not ok or type(files) ~= "table" then return {} end
-        local out = {}
-        for _, p in ipairs(files) do
-            local n = tostring(p):match("([^/\\]+)%.json$")
-            if n then out[#out + 1] = n end
-        end
-        table.sort(out)
-        return out
-    end
-
-    function Config.Export(name)
-        local ok, dataOrErr = readConfig(name or defaultConfigName)
-        if ok then
-            local ok2, json = pcall(HttpService.JSONEncode, HttpService, dataOrErr)
-            if ok2 then return json end
-            return nil
-        end
-        -- If it doesn't exist yet, export a fresh snapshot
-        local payload = {
-            schema    = 1,
-            app       = appName,
-            aurora    = "6.5.0",
-            createdAt = os.time(),
-            values    = snapshotValues(),
-        }
-        local ok3, json2 = pcall(HttpService.JSONEncode, HttpService, payload)
-        if ok3 then return json2 end
-        return nil
-    end
-
-    function Config.ExportToClipboard(name)
-        local payload = Config.Export(name)
-        if not payload then return false end
-        if type(setclipboard) == "function" then
-            local ok = pcall(setclipboard, payload)
-            return ok == true
-        end
-        return false
-    end
-
-    function Config.ImportFromClipboard(name, opts)
-        if type(getclipboard) ~= "function" then return false, "clipboard_unavailable" end
-        local ok, data = pcall(getclipboard)
-        if not ok then return false, "clipboard_failed" end
-        return Config.Import(data, name, opts)
-    end
-
-    function Config.Import(exportString, name, opts)
-        if type(exportString) ~= "string" then return false, "bad_payload" end
-        if #exportString > 512 * 1024 then return false, "too_large" end
-        local okJson, decoded = pcall(HttpService.JSONDecode, HttpService, exportString)
-        if not okJson or type(decoded) ~= "table" or decoded.schema ~= 1 or type(decoded.values) ~= "table" then
-            return false, "invalid" 
-        end
-        if not FS.ok then return false, "filesystem_unavailable" end
-        ensureFolders()
-        local outName = name or defaultConfigName
-        local ok2, json = pcall(HttpService.JSONEncode, HttpService, decoded)
-        if not ok2 then return false, "json_encode_failed" end
-        local ok3 = _safeCall(FS.writefile, configPath(outName), json)
-        if not ok3 then return false, "write_failed" end
-        if opts and opts.Load == true then
-            applyValues(decoded.values, opts)
-        end
-        return true
-    end
-
-    function Config.GetBoundKeys()
-        local t = {}
-        for k in pairs(bound) do t[#t + 1] = k end
-        table.sort(t)
-        return t
-    end
-
-    function Config._ApplyValues(values, opts)
-        applyValues(values, opts)
-    end
-
-    if autosave then
-        ensureFolders()
-    end
-
-    return Config
 end
 
 local function MakeDraggable(frame, handle)
@@ -737,24 +375,7 @@ function Aurora:CreateWindow(config)
         ActiveTab        = nil,
         -- Events
         OnTabChanged     = Signal.new(),  -- fires (newTab, oldTab)
-        -- Optional config manager (Aurora:CreateConfig)
-        Config           = nil,
     }
-
-    -- Optional config integration
-    if type(config.Config) == "table" and type(Aurora.CreateConfig) == "function" then
-        local c = config.Config
-        local ok, cfgMgr = pcall(Aurora.CreateConfig, Aurora, {
-            AppName   = c.AppName or title,
-            Folder    = c.Folder,
-            Default   = c.Default,
-            AutoSave  = c.AutoSave,
-            Debounce  = c.Debounce,
-        })
-        if ok and cfgMgr then
-            Window.Config = cfgMgr
-        end
-    end
 
     function Window:SelectTab(index)
         local tab = self.Tabs[index]
@@ -921,13 +542,6 @@ function Aurora:CreateWindow(config)
             Tab.OnElementAdded:Fire(element)
 
             element.Destroy = function()
-                -- Unbind from config (if any) before tearing down
-                if Window.Config and Window.Config.Unbind then
-                    local key = element._configKey or element.Flag or element.Key or element._configKeyCandidate
-                    if key then
-                        pcall(Window.Config.Unbind, key)
-                    end
-                end
                 for _, c in ipairs(ownedConns) do
                     if c and c.Disconnect then c:Disconnect() end
                     for i, wc in ipairs(windowConnections) do
@@ -989,14 +603,6 @@ function Aurora:CreateWindow(config)
                         })
                         AddCorner(overlay, UDim.new(0, 4))
                     end
-                end
-            end
-
-            -- Auto-bind element to window config if it declares a key
-            if Window.Config and Window.Config.Bind then
-                local key = element.Flag or element.Key or element._configKeyCandidate
-                if key then
-                    pcall(Window.Config.Bind, element, key, element._configHint and { Hint = element._configHint } or nil)
                 end
             end
 
@@ -1097,13 +703,12 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement({
                 Frame     = frame,
-                _configKeyCandidate = cfg.Flag or cfg.Key,
                 OnChanged = OnChanged,
                 GetValue  = function() return toggled end,
-                SetValue  = function(val, silent)
+                SetValue  = function(val)
                     if toggled ~= val then
                         toggled = val
-                        Refresh(silent == true)
+                        Refresh(false)
                     end
                 end,
             }, frame)
@@ -1207,21 +812,15 @@ function Aurora:CreateWindow(config)
             -- c1/c2 are frame-local (destroyed with frame); c3/c4 are UIS globals — pass as ownedConns
             return RegisterElement({
                 Frame     = frame,
-                _configKeyCandidate = cfg.Flag or cfg.Key,
                 OnChanged = OnChanged,
                 GetValue  = function() return current end,
-                SetValue  = function(val, silent)
+                SetValue  = function(val)
                     val = math.clamp(val, min, max)
-                    if val == current then return end
                     current = val
                     local f = (val - min) / (max - min)
                     Fill.Size       = UDim2.new(f, 0, 1, 0)
                     Knob.Position   = UDim2.new(f, -6, 0.5, -6)
                     ValueLabel.Text = tostring(val)
-                    if silent ~= true then
-                        if cfg.Callback then cfg.Callback(val) end
-                        OnChanged:Fire(val)
-                    end
                 end,
             }, frame, { c3, c4 })
         end
@@ -1327,17 +926,12 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement({
                 Frame     = DropdownFrame,
-                _configKeyCandidate = cfg.Flag or cfg.Key,
                 OnChanged = OnChanged,
                 GetValue  = function() return selected end,
-                SetValue  = function(val, silent)
-                    if not table.find(options, val) then return end
-                    if selected == val then return end
-                    selected   = val
-                    Label.Text = (cfg.Text or "Dropdown") .. ": " .. val
-                    if silent ~= true then
-                        if cfg.Callback then cfg.Callback(val) end
-                        OnChanged:Fire(val)
+                SetValue  = function(val)
+                    if table.find(options, val) then
+                        selected   = val
+                        Label.Text = (cfg.Text or "Dropdown") .. ": " .. val
                     end
                 end,
             }, DropdownFrame)
@@ -1507,17 +1101,12 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement({
                 Frame     = DropFrame,
-                _configKeyCandidate = cfg.Flag or cfg.Key,
                 OnChanged = OnChanged,
                 GetValue  = function() return selected end,
-                SetValue  = function(val, silent)
-                    if not table.find(options, val) then return end
-                    if selected == val then return end
-                    selected         = val
-                    HeaderLabel.Text = labelText .. ": " .. val
-                    if silent ~= true then
-                        if cfg.Callback then cfg.Callback(val) end
-                        OnChanged:Fire(val)
+                SetValue  = function(val)
+                    if table.find(options, val) then
+                        selected         = val
+                        HeaderLabel.Text = labelText .. ": " .. val
                     end
                 end,
             }, DropFrame)
@@ -1688,10 +1277,9 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement({
                 Frame     = MultiFrame,
-                _configKeyCandidate = cfg.Flag or cfg.Key,
                 OnChanged = OnChanged,
                 GetValue  = function() return SelectedList() end,
-                SetValue  = function(vals, silent)
+                SetValue  = function(vals)
                     -- vals is an array of selected option strings
                     selected = {}
                     for _, v in ipairs(vals) do selected[v] = true end
@@ -1708,11 +1296,6 @@ function Aurora:CreateWindow(config)
                             if tick then tick.Text = on and "✓" or "" end
                             if lbl  then lbl.TextColor3 = on and Aurora.Config.Theme.Text or Aurora.Config.Theme.TextMuted end
                         end
-                    end
-                    if silent ~= true then
-                        local out = SelectedList()
-                        if cfg.Callback then cfg.Callback(out) end
-                        OnChanged:Fire(out)
                     end
                 end,
                 IsSelected = function(opt) return selected[opt] == true end,
@@ -1767,18 +1350,9 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement({
                 Frame     = frame,
-                _configKeyCandidate = cfg.Flag or cfg.Key,
                 OnChanged = OnChanged,
                 GetValue  = function() return InputBox.Text end,
-                SetValue  = function(val, silent)
-                    val = tostring(val or "")
-                    if InputBox.Text == val then return end
-                    InputBox.Text = val
-                    if silent ~= true then
-                        if cfg.Callback then cfg.Callback(val) end
-                        OnChanged:Fire(val)
-                    end
-                end,
+                SetValue  = function(val) InputBox.Text = val end,
             }, frame)
         end
 
@@ -1856,7 +1430,7 @@ function Aurora:CreateWindow(config)
             })
             AddCorner(NumBox, UDim.new(0, 4))
 
-            local function Commit(val, silent)
+            local function Commit(val)
                 val = math.clamp(math.floor(val / step + 0.5) * step, min, max)
                 if val == current then
                     NumBox.Text = tostring(current) -- reset display if clamped
@@ -1864,27 +1438,24 @@ function Aurora:CreateWindow(config)
                 end
                 current     = val
                 NumBox.Text = tostring(val)
-                if silent ~= true then
-                    if cfg.Callback then cfg.Callback(val) end
-                    OnChanged:Fire(val)
-                end
+                if cfg.Callback then cfg.Callback(val) end
+                OnChanged:Fire(val)
             end
 
-            MinusBtn.MouseButton1Click:Connect(function() Commit(current - step, false) end)
-            PlusBtn.MouseButton1Click:Connect(function()  Commit(current + step, false) end)
+            MinusBtn.MouseButton1Click:Connect(function() Commit(current - step) end)
+            PlusBtn.MouseButton1Click:Connect(function()  Commit(current + step) end)
 
             NumBox.FocusLost:Connect(function()
                 local n = tonumber(NumBox.Text)
-                if n then Commit(n, false)
+                if n then Commit(n)
                 else NumBox.Text = tostring(current) end  -- revert invalid input
             end)
 
             return RegisterElement({
                 Frame     = frame,
-                _configKeyCandidate = cfg.Flag or cfg.Key,
                 OnChanged = OnChanged,
                 GetValue  = function() return current end,
-                SetValue  = function(val, silent) Commit(val, silent) end,
+                SetValue  = function(val) Commit(val) end,
             }, frame)
         end
 
@@ -1962,18 +1533,11 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement({
                 Frame     = frame,
-                _configKeyCandidate = cfg.Flag or cfg.Key,
-                _configHint = "Enum.KeyCode",
                 OnChanged = OnChanged,
                 GetValue  = function() return current end,
-                SetValue  = function(key, silent)
-                    if key == current then return end
+                SetValue  = function(key)
                     current   = key
                     KeyBtn.Text = key == Enum.KeyCode.Unknown and "None" or key.Name
-                    if silent ~= true then
-                        if cfg.Callback then cfg.Callback(current) end
-                        OnChanged:Fire(current)
-                    end
                 end,
             }, frame, { cancelCon })
         end
@@ -2176,7 +1740,7 @@ function Aurora:CreateWindow(config)
             Create("UIPadding", {Parent = HexInput, PaddingLeft = UDim.new(0, 8)})
 
             -- ── Commit ───────────────────────
-            local function Commit(silent)
+            local function Commit()
                 color = Color3.fromHSV(h, s, v)
                 Preview.BackgroundColor3 = color
                 SVPad.BackgroundColor3   = Color3.fromHSV(h, 1, 1)
@@ -2186,10 +1750,8 @@ function Aurora:CreateWindow(config)
                     math.round(color.R * 255),
                     math.round(color.G * 255),
                     math.round(color.B * 255))
-                if silent ~= true then
-                    if cfg.Callback then cfg.Callback(color) end
-                    OnChanged:Fire(color)
-                end
+                if cfg.Callback then cfg.Callback(color) end
+                OnChanged:Fire(color)
             end
 
             -- SV drag
@@ -2200,14 +1762,14 @@ function Aurora:CreateWindow(config)
                     -- Also sample on initial click
                     s = math.clamp((inp.Position.X - SVPad.AbsolutePosition.X) / SVPad.AbsoluteSize.X, 0, 1)
                     v = 1 - math.clamp((inp.Position.Y - SVPad.AbsolutePosition.Y) / SVPad.AbsoluteSize.Y, 0, 1)
-                    Commit(false)
+                    Commit()
                 end
             end)
             local svMove = UserInputService.InputChanged:Connect(function(inp)
                 if svDragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
                     s = math.clamp((inp.Position.X - SVPad.AbsolutePosition.X) / SVPad.AbsoluteSize.X, 0, 1)
                     v = 1 - math.clamp((inp.Position.Y - SVPad.AbsolutePosition.Y) / SVPad.AbsoluteSize.Y, 0, 1)
-                    Commit(false)
+                    Commit()
                 end
             end)
             local svEnd = UserInputService.InputEnded:Connect(function(inp)
@@ -2221,13 +1783,13 @@ function Aurora:CreateWindow(config)
                 if inp.UserInputType == Enum.UserInputType.MouseButton1 then
                     hueDragging = true
                     h = math.clamp((inp.Position.Y - HueBar.AbsolutePosition.Y) / HueBar.AbsoluteSize.Y, 0, 1)
-                    Commit(false)
+                    Commit()
                 end
             end)
             local hueMove = UserInputService.InputChanged:Connect(function(inp)
                 if hueDragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
                     h = math.clamp((inp.Position.Y - HueBar.AbsolutePosition.Y) / HueBar.AbsoluteSize.Y, 0, 1)
-                    Commit(false)
+                    Commit()
                 end
             end)
             local hueEnd = UserInputService.InputEnded:Connect(function(inp)
@@ -2245,7 +1807,7 @@ function Aurora:CreateWindow(config)
                     if r and g and b then
                         color  = Color3.fromRGB(r, g, b)
                         h, s, v = Color3.toHSV(color)
-                        Commit(false)
+                        Commit()
                     end
                 end
             end)
@@ -2260,14 +1822,12 @@ function Aurora:CreateWindow(config)
 
             return RegisterElement({
                 Frame     = PickerFrame,
-                _configKeyCandidate = cfg.Flag or cfg.Key,
-                _configHint = "Color3",
                 OnChanged = OnChanged,
                 GetValue  = function() return color end,
-                SetValue  = function(c, silent)
+                SetValue  = function(c)
                     color  = c
                     h, s, v = Color3.toHSV(c)
-                    Commit(silent == true)
+                    Commit()
                 end,
             }, PickerFrame, { svMove, svEnd, hueMove, hueEnd })
         end
