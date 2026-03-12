@@ -8,7 +8,7 @@ local UserInputService = game:GetService("UserInputService")
 local Players          = game:GetService("Players")
 local LocalPlayer      = Players.LocalPlayer
 
--- Built: 2026-03-12 06:46 UTC
+-- Built: 2026-03-12 07:06 UTC
 
 -- ────────────────────────────────────────────────────────────────────────
 --  Lightweight pub/sub event system
@@ -2587,19 +2587,17 @@ end)()
 local ConfigSystem = (function()
 local HttpService = game:GetService("HttpService")
 
--- Detect executor file API availability once at module load time.
-local HAS_FILE_API = type(writefile)   == "function"
-                  and type(readfile)   == "function"
-                  and type(isfile)     == "function"
-
+-- Executor API detection (once at module load)
+local HAS_FILE_API   = type(writefile)    == "function"
+                    and type(readfile)    == "function"
+                    and type(isfile)      == "function"
 local HAS_FOLDER_API = type(isfolder)    == "function"
                     and type(makefolder) == "function"
+local HAS_LIST_FILES = type(listfiles)   == "function"
+local HAS_DELETE     = type(deletefile)  == "function"
+local HAS_CLIPBOARD  = type(setclipboard) == "function"
 
-local HAS_CLIPBOARD = type(setclipboard) == "function"
-
--- ── Serialisation ─────────────────────────────────────────────────────────────
--- Converts Roblox types that JSON cannot represent into tagged plain tables.
-
+-- Serialisation helpers
 local function serialise(value)
     local t = typeof(value)
     if t == "Color3" then
@@ -2609,7 +2607,6 @@ local function serialise(value)
     elseif t == "boolean" or t == "number" or t == "string" then
         return value
     elseif t == "table" then
-        -- Arrays of primitives (MultiSelect values).
         local copy = {}
         for i, v in ipairs(value) do copy[i] = serialise(v) end
         return copy
@@ -2620,18 +2617,11 @@ end
 local function deserialise(raw)
     if type(raw) == "table" then
         if raw._type == "Color3" then
-            return Color3.new(
-                tonumber(raw.r) or 0,
-                tonumber(raw.g) or 0,
-                tonumber(raw.b) or 0
-            )
+            return Color3.new(tonumber(raw.r) or 0, tonumber(raw.g) or 0, tonumber(raw.b) or 0)
         elseif raw._type == "EnumItem" then
-            local ok, val = pcall(function()
-                return Enum[raw.enum][raw.name]
-            end)
+            local ok, val = pcall(function() return Enum[raw.enum][raw.name] end)
             return ok and val or Enum.KeyCode.Unknown
         else
-            -- Plain array (e.g. MultiSelect).
             local out = {}
             for i, v in ipairs(raw) do out[i] = deserialise(v) end
             return out
@@ -2640,234 +2630,294 @@ local function deserialise(raw)
     return raw
 end
 
--- ── Factory ───────────────────────────────────────────────────────────────────
-
+-- Factory
 local function createConfig(cfg)
     cfg = cfg or {}
     local name     = cfg.Name     or "Config"
-    local autoSave = cfg.AutoSave ~= false   -- default: true
-    local autoLoad = cfg.AutoLoad ~= false   -- default: true
+    local autoSave = cfg.AutoSave ~= false
+    local autoLoad = cfg.AutoLoad ~= false
     local folder   = cfg.Folder   or "Aurora"
     local profile  = cfg.Profile  or "default"
 
-    local OnSave  = Signal.new()
-    local OnLoad  = Signal.new()
-    local OnReset = Signal.new()
+    local OnSave           = Signal.new()
+    local OnLoad           = Signal.new()
+    local OnReset          = Signal.new()
+    local OnProfileChanged = Signal.new()
 
-    -- _links[key] = { element, default }
-    -- _data[key]  = serialised value from last save or load
     local _links = {}
     local _data  = {}
 
-    -- ── Path ─────────────────────────────────────────────────────────────────
-
-    local function buildPath()
-        local suffix = (profile ~= "default") and ("_" .. profile) or ""
+    -- Path helpers
+    local function buildPath(p)
+        p = p or profile
+        local suffix = (p ~= "default") and ("_" .. p) or ""
         return folder .. "/" .. name .. suffix .. ".json"
     end
 
-    -- ── Storage layer ─────────────────────────────────────────────────────────
-
-    local function writeFile(content)
-        if not HAS_FILE_API then return false end
-        local ok = pcall(function()
-            if HAS_FOLDER_API and not isfolder(folder) then
-                makefolder(folder)
-            end
-            writefile(buildPath(), content)
-        end)
-        return ok
+    local function lastProfilePath()
+        return folder .. "/" .. name .. "_lastProfile.txt"
     end
 
-    local function readFile()
+    -- Storage layer
+    local function ensureFolder()
+        if HAS_FOLDER_API and not isfolder(folder) then pcall(makefolder, folder) end
+    end
+
+    local function writeFile(path, content)
+        if not HAS_FILE_API then return false end
+        return pcall(function() ensureFolder(); writefile(path, content) end)
+    end
+
+    local function readFile(path)
         if not HAS_FILE_API then return nil end
         local ok, content = pcall(function()
-            return isfile(buildPath()) and readfile(buildPath()) or nil
+            return isfile(path) and readfile(path) or nil
         end)
         return (ok and content) or nil
     end
 
-    -- ── Core operations ───────────────────────────────────────────────────────
+    local function deleteFile(path)
+        if not HAS_FILE_API or not HAS_DELETE then return false end
+        return pcall(deletefile, path)
+    end
 
+    -- Last-profile persistence
+    local function saveLastProfile(p)
+        writeFile(lastProfilePath(), p)
+    end
+
+    local function loadLastProfile()
+        local c = readFile(lastProfilePath())
+        return (c and c ~= "") and c or "default"
+    end
+
+    -- Profile discovery: scans folder for matching files
+    local function listProfiles()
+        local profiles, seen = {}, {}
+        local function add(p)
+            if not seen[p] then seen[p] = true; table.insert(profiles, p) end
+        end
+        add("default")
+        if HAS_FILE_API and HAS_LIST_FILES then
+            local ok, files = pcall(listfiles, folder)
+            if ok and files then
+                local prefix   = name .. "_"
+                local suffix   = ".json"
+                local sideName = name .. "_lastProfile.txt"
+                for _, path in ipairs(files) do
+                    local fname = path:match("[^/\\]+$") or path
+                    if fname ~= sideName
+                    and fname:sub(1, #prefix) == prefix
+                    and fname:sub(-#suffix)   == suffix then
+                        local p = fname:sub(#prefix + 1, -#suffix - 1)
+                        if p ~= "" then add(p) end
+                    end
+                end
+            end
+        end
+        add(profile)  -- always include active profile
+        return profiles
+    end
+
+    -- Core operations
     local function doSave()
         local out = {}
         for key, link in pairs(_links) do
             out[key] = serialise(link.element.GetValue())
         end
         local json = HttpService:JSONEncode(out)
-        writeFile(json)
+        writeFile(buildPath(), json)
         _data = out
         OnSave:Fire()
     end
 
     local function doLoad()
-        local content = readFile()
+        local content = readFile(buildPath())
         if not content or content == "" then return false end
-        local ok, decoded = pcall(function()
-            return HttpService:JSONDecode(content)
-        end)
+        local ok, decoded = pcall(function() return HttpService:JSONDecode(content) end)
         if not ok or type(decoded) ~= "table" then return false end
         _data = decoded
-        -- Apply to any already-linked elements (silent — SetValue fires no callbacks).
         for key, link in pairs(_links) do
-            if _data[key] ~= nil then
-                link.element.SetValue(deserialise(_data[key]))
-            end
+            if _data[key] ~= nil then link.element.SetValue(deserialise(_data[key])) end
         end
         OnLoad:Fire()
         return true
     end
 
-    -- ── Config object ─────────────────────────────────────────────────────────
-
+    -- Config object
     local self = {}
+    self.OnSave           = OnSave
+    self.OnLoad           = OnLoad
+    self.OnReset          = OnReset
+    self.OnProfileChanged = OnProfileChanged
 
-    self.OnSave  = OnSave
-    self.OnLoad  = OnLoad
-    self.OnReset = OnReset
-
-    -- Link an element to a config key.
-    --   • Snapshots the element's current value as its reset default.
-    --   • Immediately applies any previously loaded saved value (silent).
-    --   • Connects OnChanged → auto-save (only fires on user interaction, not SetValue).
-    -- Returns self for chaining: cfg:Link("A", a):Link("B", b)
     function self:Link(key, element)
         if not element or not element.GetValue then
-            warn("[Aurora Config] Link(\"" .. tostring(key) .. "\"): element is nil or missing GetValue")
+            warn("[Aurora Config] Link(\"" .. tostring(key) .. "\"): element missing GetValue")
             return self
         end
-
-        local default = element.GetValue()   -- snapshot at link time
-        _links[key]   = { element = element, default = default }
-
-        -- Apply a saved value if the file was already loaded.
-        if _data[key] ~= nil then
-            element.SetValue(deserialise(_data[key]))
-        end
-
-        -- Wire auto-save.  OnChanged fires on user action only (v7 guarantee).
+        _links[key] = { element = element, default = element.GetValue() }
+        if _data[key] ~= nil then element.SetValue(deserialise(_data[key])) end
         if autoSave and element.OnChanged then
-            element.OnChanged:Connect(function()
-                doSave()
-            end)
+            element.OnChanged:Connect(function() doSave() end)
         end
-
         return self
     end
 
-    -- Manually persist current element values to disk.
-    function self:Save()
-        doSave()
-        return self
-    end
+    function self:Save()   doSave();       return self end
+    function self:Load()   return doLoad()             end
 
-    -- Manually load values from disk and apply them to linked elements.
-    -- Returns true if a save file was found and parsed successfully.
-    function self:Load()
-        return doLoad()
-    end
-
-    -- Reset all linked elements to their defaults and clear the save file.
     function self:Reset()
-        for _, link in pairs(_links) do
-            link.element.SetValue(link.default)
-        end
+        for _, link in pairs(_links) do link.element.SetValue(link.default) end
         _data = {}
-        writeFile("{}")
+        writeFile(buildPath(), "{}")
         OnReset:Fire()
         return self
     end
 
-    -- Export current element values as a JSON string (for sharing or clipboard).
     function self:Export()
         local out = {}
-        for key, link in pairs(_links) do
-            out[key] = serialise(link.element.GetValue())
-        end
+        for key, link in pairs(_links) do out[key] = serialise(link.element.GetValue()) end
         return HttpService:JSONEncode(out)
     end
 
-    -- Import values from a JSON string. Returns true on success.
-    -- If autoSave is on, writes the imported values to disk immediately.
     function self:Import(str)
         if type(str) ~= "string" or str == "" then return false end
-        local ok, decoded = pcall(function()
-            return HttpService:JSONDecode(str)
-        end)
+        local ok, decoded = pcall(function() return HttpService:JSONDecode(str) end)
         if not ok or type(decoded) ~= "table" then
             warn("[Aurora Config] Import: invalid JSON — " .. tostring(decoded))
             return false
         end
         _data = decoded
         for key, link in pairs(_links) do
-            if decoded[key] ~= nil then
-                link.element.SetValue(deserialise(decoded[key]))
-            end
+            if decoded[key] ~= nil then link.element.SetValue(deserialise(decoded[key])) end
         end
         if autoSave then doSave() end
         return true
     end
 
-    -- Switch to a named save slot. Loads the new profile's values immediately.
-    -- Returns self for chaining.
     function self:SetProfile(profileName)
-        profile = tostring(profileName)
+        profileName = tostring(profileName):match("^%s*(.-)%s*$")
+        if profileName == "" then profileName = "default" end
+        profile = profileName
         doLoad()
+        saveLastProfile(profileName)
+        OnProfileChanged:Fire(profileName)
         return self
     end
 
-    function self:GetProfile()
-        return profile
+    function self:GetProfile()    return profile         end
+    function self:HasStorage()    return HAS_FILE_API    end
+    function self:ListProfiles()  return listProfiles()  end
+
+    function self:DeleteProfile(profileName)
+        if profileName == "default" then return false end
+        local deleted = deleteFile(buildPath(profileName))
+        if profile == profileName then self:SetProfile("default") end
+        return deleted
     end
 
-    -- Returns true if executor file APIs are available (i.e. saves will persist).
-    function self:HasStorage()
-        return HAS_FILE_API
-    end
-
-    -- ── Built-in controls UI ──────────────────────────────────────────────────
-    -- Injects a ready-made import / export / reset section into any Tab.
-    -- Call after linking your elements:
-    --   cfg:Link("Toggle", toggle):Link("Speed", speedSlider)
-    --   cfg:CreateControls(settingsTab)
-
+    -- CreateControls: profile selector table + import/export/reset UI
     function self:CreateControls(tab)
         if not tab or not tab.CreateSection then
             warn("[Aurora Config] CreateControls: invalid tab")
             return self
         end
 
+        -- Storage status
         tab:CreateSection({ Text = "Configuration" })
-
-        -- Storage status indicator
-        local storageType = HAS_FILE_API and "File  ·  " .. buildPath() or "In-memory only (no file API)"
         tab:CreateStatusLabel({
-            Text = storageType,
+            Text = HAS_FILE_API
+                and ("Saving to:  " .. folder .. "/")
+                or  "In-memory only — no file API detected",
             Type = HAS_FILE_API and "Success" or "Warning",
         })
 
-        -- Profile switcher (only shown when storage is available)
+        -- Profile selector (only when file API is available)
         if HAS_FILE_API then
+            tab:CreateSection({ Text = "Profiles" })
+
+            local activeLabel = tab:CreateStatusLabel({
+                Text = "Active:  " .. profile,
+                Type = "Info",
+            })
+
+            -- Table of all discovered profiles. Click a row to switch.
+            local profileTable
+
+            local function buildRows()
+                local rows = {}
+                for _, p in ipairs(listProfiles()) do
+                    table.insert(rows, { p, p == profile and "● Active" or "" })
+                end
+                return rows
+            end
+
+            local function refreshTable()
+                if profileTable then profileTable.SetRows(buildRows()) end
+            end
+
+            profileTable = tab:CreateTable({
+                Columns    = { "Profile", "" },
+                MaxVisible = 5,
+                Rows       = buildRows(),
+            })
+
+            profileTable.OnRowClicked:Connect(function(_, row)
+                local clicked = row[1]
+                if clicked == profile then return end
+                self:SetProfile(clicked)
+                Aurora:Notify({ Title = "Config", Message = "Switched to: " .. clicked, Type = "Success" })
+            end)
+
+            -- Keep table + label in sync whenever SetProfile is called anywhere
+            OnProfileChanged:Connect(function(p)
+                activeLabel.SetValue("Active:  " .. p, "Info")
+                refreshTable()
+            end)
+
+            -- Create a new profile: type name, press Enter
             tab:CreateInput({
-                Text        = "Save Profile",
-                Placeholder = "default",
-                Callback    = function(name)
-                    if name == "" then name = "default" end
-                    self:SetProfile(name)
+                Text        = "New Profile",
+                Placeholder = "e.g.  pvp  /  harvest  /  grind  — press Enter to create",
+                Callback    = function(newName)
+                    newName = newName:match("^%s*(.-)%s*$")
+                    if newName == "" then return end
+                    if newName == profile then
+                        Aurora:Notify({ Title = "Config", Message = "Already on that profile.", Type = "Info" })
+                        return
+                    end
+                    self:SetProfile(newName)
+                    doSave()  -- seed the new profile file with current values
+                    Aurora:Notify({ Title = "Config", Message = "Created & switched to: " .. newName, Type = "Success" })
+                end,
+            })
+
+            -- Delete current profile (protected: "default" is always safe)
+            tab:CreateButton({
+                Text     = "Delete Current Profile",
+                Callback = function()
+                    if profile == "default" then
+                        Aurora:Notify({ Title = "Config", Message = "Cannot delete the default profile.", Type = "Warning" })
+                        return
+                    end
+                    local deleted = self:DeleteProfile(profile)
                     Aurora:Notify({
                         Title   = "Config",
-                        Message = "Switched to profile: " .. name,
-                        Type    = "Info",
+                        Message = deleted
+                            and "Profile deleted. Switched to default."
+                            or  "Switched to default (file delete unavailable).",
+                        Type    = "Warning",
                     })
                 end,
             })
         end
 
+        -- Import / Export
         tab:CreateSection({ Text = "Import / Export" })
 
-        -- Export: serialises current values and puts them on the clipboard.
         tab:CreateButton({
-            Text     = HAS_CLIPBOARD and "Copy Config to Clipboard" or "Export Config (see console)",
+            Text     = HAS_CLIPBOARD and "Copy Config to Clipboard" or "Export Config (console)",
             Callback = function()
                 local json = self:Export()
                 if HAS_CLIPBOARD then
@@ -2875,13 +2925,12 @@ local function createConfig(cfg)
                     Aurora:Notify({ Title = "Config", Message = "Copied to clipboard.", Type = "Success" })
                 else
                     print("[Aurora Config] Export:\n" .. json)
-                    Aurora:Notify({ Title = "Config", Message = "Config printed to console.", Type = "Info" })
+                    Aurora:Notify({ Title = "Config", Message = "Printed to console.", Type = "Info" })
                 end
             end,
         })
 
-        -- Import: reads JSON from a text box on Enter.
-        local importStatus = tab:CreateStatusLabel({ Text = "Paste JSON below and press Enter.", Type = "Info" })
+        local importStatus = tab:CreateStatusLabel({ Text = "Paste JSON and press Enter to import.", Type = "Info" })
         tab:CreateInput({
             Text        = "Import Config",
             Placeholder = '{"MyToggle": true, "Speed": 50, ...}',
@@ -2896,27 +2945,26 @@ local function createConfig(cfg)
             end,
         })
 
+        -- Reset
         tab:CreateSection({ Text = "Reset" })
-
         tab:CreateButton({
-            Text     = "Reset All to Defaults",
+            Text     = "Reset to Defaults",
             Callback = function()
                 self:Reset()
-                Aurora:Notify({
-                    Title   = "Config",
-                    Message = "All settings reset to defaults.",
-                    Type    = "Warning",
-                })
+                Aurora:Notify({ Title = "Config", Message = "All settings reset to defaults.", Type = "Warning" })
             end,
         })
 
         return self
     end
 
-    -- ── Auto-load ─────────────────────────────────────────────────────────────
-    -- Reads the save file into _data immediately at creation time.
-    -- Elements linked afterwards receive their saved values via Link().
+    -- Auto-load: restore last profile then load its data.
+    -- Done before any Link() calls; _data is cached so Link() applies values later.
     if autoLoad then
+        local last = loadLastProfile()
+        if last ~= profile then
+            profile = last  -- assign directly — signal not wired yet
+        end
         doLoad()
     end
 
