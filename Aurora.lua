@@ -8,7 +8,7 @@ local UserInputService = game:GetService("UserInputService")
 local Players          = game:GetService("Players")
 local LocalPlayer      = Players.LocalPlayer
 
--- Built: 2026-03-12 07:06 UTC
+-- Built: 2026-03-12 07:13 UTC
 
 -- ────────────────────────────────────────────────────────────────────────
 --  Lightweight pub/sub event system
@@ -2817,141 +2817,99 @@ local function createConfig(cfg)
         return deleted
     end
 
-    -- CreateControls: profile selector table + import/export/reset UI
+    -- CreateControls: compact dropdown + import/export/reset (no section spam)
     function self:CreateControls(tab)
         if not tab or not tab.CreateSection then
             warn("[Aurora Config] CreateControls: invalid tab")
             return self
         end
 
-        -- Storage status
-        tab:CreateSection({ Text = "Configuration" })
-        tab:CreateStatusLabel({
-            Text = HAS_FILE_API
-                and ("Saving to:  " .. folder .. "/")
-                or  "In-memory only — no file API detected",
-            Type = HAS_FILE_API and "Success" or "Warning",
-        })
+        if not HAS_FILE_API then
+            tab:CreateStatusLabel({ Text = "Config: in-memory only (no file API)", Type = "Warning" })
+        end
 
-        -- Profile selector (only when file API is available)
+        -- Profile picker
         if HAS_FILE_API then
-            tab:CreateSection({ Text = "Profiles" })
+            tab:CreateSection({ Text = "Profile" })
 
-            local activeLabel = tab:CreateStatusLabel({
-                Text = "Active:  " .. profile,
-                Type = "Info",
-            })
-
-            -- Table of all discovered profiles. Click a row to switch.
-            local profileTable
-
-            local function buildRows()
-                local rows = {}
-                for _, p in ipairs(listProfiles()) do
-                    table.insert(rows, { p, p == profile and "● Active" or "" })
-                end
-                return rows
-            end
-
-            local function refreshTable()
-                if profileTable then profileTable.SetRows(buildRows()) end
-            end
-
-            profileTable = tab:CreateTable({
-                Columns    = { "Profile", "" },
-                MaxVisible = 5,
-                Rows       = buildRows(),
-            })
-
-            profileTable.OnRowClicked:Connect(function(_, row)
-                local clicked = row[1]
-                if clicked == profile then return end
-                self:SetProfile(clicked)
-                Aurora:Notify({ Title = "Config", Message = "Switched to: " .. clicked, Type = "Success" })
-            end)
-
-            -- Keep table + label in sync whenever SetProfile is called anywhere
-            OnProfileChanged:Connect(function(p)
-                activeLabel.SetValue("Active:  " .. p, "Info")
-                refreshTable()
-            end)
-
-            -- Create a new profile: type name, press Enter
-            tab:CreateInput({
-                Text        = "New Profile",
-                Placeholder = "e.g.  pvp  /  harvest  /  grind  — press Enter to create",
-                Callback    = function(newName)
-                    newName = newName:match("^%s*(.-)%s*$")
-                    if newName == "" then return end
-                    if newName == profile then
-                        Aurora:Notify({ Title = "Config", Message = "Already on that profile.", Type = "Info" })
-                        return
-                    end
-                    self:SetProfile(newName)
-                    doSave()  -- seed the new profile file with current values
-                    Aurora:Notify({ Title = "Config", Message = "Created & switched to: " .. newName, Type = "Success" })
+            local profileDropdown
+            profileDropdown = tab:CreateDropdown({
+                Text     = "Selected Profile",
+                Options  = listProfiles(),
+                Default  = profile,
+                Callback = function(chosen)
+                    if chosen == profile then return end
+                    self:SetProfile(chosen)
+                    Aurora:Notify({ Title = "Config", Message = "Switched to: " .. chosen, Type = "Success" })
                 end,
             })
 
-            -- Delete current profile (protected: "default" is always safe)
+            tab:CreateInput({
+                Text        = "New Profile",
+                Placeholder = "Name — press Enter to create",
+                Callback    = function(newName)
+                    newName = newName:match("^%s*(.-)%s*$")
+                    if newName == "" or newName == profile then return end
+                    self:SetProfile(newName)
+                    doSave()
+                    profileDropdown.SetValue(newName)
+                    Aurora:Notify({ Title = "Config", Message = "Created: " .. newName, Type = "Success" })
+                end,
+            })
+
             tab:CreateButton({
                 Text     = "Delete Current Profile",
                 Callback = function()
                     if profile == "default" then
-                        Aurora:Notify({ Title = "Config", Message = "Cannot delete the default profile.", Type = "Warning" })
+                        Aurora:Notify({ Title = "Config", Message = "Can' .. 't delete default.", Type = "Warning" })
                         return
                     end
-                    local deleted = self:DeleteProfile(profile)
-                    Aurora:Notify({
-                        Title   = "Config",
-                        Message = deleted
-                            and "Profile deleted. Switched to default."
-                            or  "Switched to default (file delete unavailable).",
-                        Type    = "Warning",
-                    })
+                    local prev = profile
+                    self:DeleteProfile(profile)
+                    profileDropdown.SetValue("default")
+                    Aurora:Notify({ Title = "Config", Message = prev .. " deleted.", Type = "Warning" })
                 end,
             })
+
+            OnProfileChanged:Connect(function(p)
+                profileDropdown.SetValue(p)
+            end)
         end
 
         -- Import / Export
         tab:CreateSection({ Text = "Import / Export" })
 
         tab:CreateButton({
-            Text     = HAS_CLIPBOARD and "Copy Config to Clipboard" or "Export Config (console)",
+            Text     = HAS_CLIPBOARD and "Export to Clipboard" or "Export (console)",
             Callback = function()
                 local json = self:Export()
                 if HAS_CLIPBOARD then
                     pcall(setclipboard, json)
-                    Aurora:Notify({ Title = "Config", Message = "Copied to clipboard.", Type = "Success" })
+                    Aurora:Notify({ Title = "Config", Message = "Copied.", Type = "Success" })
                 else
-                    print("[Aurora Config] Export:\n" .. json)
+                    print("[Aurora Config] Export:" .. json)
                     Aurora:Notify({ Title = "Config", Message = "Printed to console.", Type = "Info" })
                 end
             end,
         })
 
-        local importStatus = tab:CreateStatusLabel({ Text = "Paste JSON and press Enter to import.", Type = "Info" })
         tab:CreateInput({
             Text        = "Import Config",
-            Placeholder = '{"MyToggle": true, "Speed": 50, ...}',
+            Placeholder = "Paste JSON and press Enter",
             Callback    = function(str)
                 if self:Import(str) then
-                    importStatus.SetValue("Import successful.", "Success")
-                    Aurora:Notify({ Title = "Config", Message = "Settings imported.", Type = "Success" })
+                    Aurora:Notify({ Title = "Config", Message = "Imported.", Type = "Success" })
                 else
-                    importStatus.SetValue("Import failed — invalid JSON.", "Error")
-                    Aurora:Notify({ Title = "Config", Message = "Invalid config string.", Type = "Error" })
+                    Aurora:Notify({ Title = "Config", Message = "Invalid JSON.", Type = "Error" })
                 end
             end,
         })
 
-        -- Reset
-        tab:CreateSection({ Text = "Reset" })
         tab:CreateButton({
             Text     = "Reset to Defaults",
             Callback = function()
                 self:Reset()
-                Aurora:Notify({ Title = "Config", Message = "All settings reset to defaults.", Type = "Warning" })
+                Aurora:Notify({ Title = "Config", Message = "Reset to defaults.", Type = "Warning" })
             end,
         })
 
