@@ -8,7 +8,7 @@ local UserInputService = game:GetService("UserInputService")
 local Players          = game:GetService("Players")
 local LocalPlayer      = Players.LocalPlayer
 
--- Built: 2026-03-12 07:41 UTC
+-- Built: 2026-03-12 07:47 UTC
 
 -- ────────────────────────────────────────────────────────────────────────
 --  Lightweight pub/sub event system
@@ -2903,6 +2903,7 @@ local function createConfig(cfg)
                     end
                     local prev = profile
                     self:DeleteProfile(profile)
+                    profileDropdown.SetOptions(listProfiles())
                     profileDropdown.SetValue("default")
                     Notification.sharedNotify({ Title = "Config", Message = prev .. " deleted.", Type = "Warning" })
                 end,
