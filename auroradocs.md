@@ -563,30 +563,6 @@ Tab:CreateSlider({ Text = "Speed", ... })
 
 ---
 
-### `Tab:CreateConfigManager(config) → element`
-
-A visual config management panel with save/load/delete controls and a config list. See [Config System](#config-system) for full details.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `Text` | string | `"Configuration Manager"` | Title label |
-| `AutoLoad` | boolean | `false` | Automatically load last used config on creation |
-
-**Extra methods:**
-
-| Method | Description |
-|---|---|
-| `element.RefreshList()` | Updates the displayed config list |
-
-```lua
-Settings:CreateConfigManager({
-    Text     = "Configuration Manager",
-    AutoLoad = true,  -- auto-load last config
-})
-```
-
----
-
 ## Element API Reference
 
 Every element returned by any `Tab:Create*` method exposes the following in addition to its own fields:
@@ -660,138 +636,6 @@ shopRestockSignal:Once(function()
     buyAllSeeds()
 end)
 ```
-
----
-
-## Config System
-
-Aurora provides a complete configuration management system for saving and loading UI element states. Configs are stored as plain JSON in `workspace/AuroraConfigs/[WindowTitle]/`.
-
-### Quick Start
-
-Enable config tracking on elements by adding `ConfigName` to their configuration:
-
-```lua
-local Window = Aurora:CreateWindow({ Title = "MyScript" })
-local Tab = Window:CreateTab({ Name = "Settings" })
-
--- These elements will be tracked for config
-Tab:CreateToggle({
-    Text       = "Auto Farm",
-    ConfigName = "autoFarm",  -- enables config tracking
-    Default    = false,
-    Callback   = function(v) end,
-})
-
-Tab:CreateSlider({
-    Text       = "Speed",
-    ConfigName = "speed",     -- enables config tracking
-    Min        = 1, Max = 100,
-    Default    = 50,
-})
-
-Tab:CreateColorPicker({
-    Text       = "ESP Color",
-    ConfigName = "espColor",  -- enables config tracking
-    Default    = Color3.fromRGB(255,0,0),
-})
-```
-
-### Creating a Config Manager UI
-
-Add a visual config manager to your Settings tab:
-
-```lua
-local Settings = Window:CreateTab({ Name = "Settings" })
-
-Settings:CreateConfigManager({
-    Text      = "Configuration Manager",
-    AutoLoad  = true,  -- automatically load last used config
-})
-```
-
-The manager includes:
-- **Save** — saves current element values to a named config
-- **Load** — restores element values from a saved config
-- **Delete** — removes a config file
-- **Refresh** — updates the config list
-- **Click-to-fill** — click any config name in the list to populate the input
-
-### Programmatic API
-
-#### Window Methods
-
-```lua
--- Save current state to a config
-local success, error = Window:SaveConfig("PvP Setup")
-
--- Load a config and apply to all tracked elements
-local success, error = Window:LoadConfig("PvP Setup")
-```
-
-#### ConfigManager API
-
-```lua
--- List all configs for this window
-local configs = Aurora.ConfigManager:List(Window._title)
--- Returns: {"PvP Setup", "Farm Setup", "Default"}
-
--- Delete a config
-Aurora.ConfigManager:Delete("Old Config", Window._title)
-
--- Export config as JSON string (for sharing)
-local jsonString = Aurora.ConfigManager:Export("PvP Setup", Window._title)
-
--- Import config from JSON string
-Aurora.ConfigManager:Import("Imported Setup", jsonString, Window._title)
-
--- Get last loaded/saved config name
-local lastConfig = Aurora.ConfigManager:GetLastConfig(Window._title)
-
--- Set last config (usually done automatically)
-Aurora.ConfigManager:SetLastConfig(Window._title, "PvP Setup")
-
--- Enable auto-save every N seconds (optional)
-Aurora.ConfigManager:EnableAutoSave(60, Window, "AutoSave")
-```
-
-### Supported Element Types
-
-All elements with `GetValue()` and `SetValue()` methods support config tracking:
-
-| Element | Config Value Type |
-|---|---|
-| `CreateToggle` | `boolean` |
-| `CreateSlider` | `number` |
-| `CreateDropdown` | `string` (selected option) |
-| `CreateSearchDropdown` | `string` (selected option) |
-| `CreateMultiSelect` | `table` (array of selected strings) |
-| `CreateInput` | `string` |
-| `CreateNumberInput` | `number` |
-| `CreateKeybind` | `Enum.KeyCode` |
-| `CreateColorPicker` | `Color3` (serialized as hex) |
-
-### Config File Format
-
-Configs are stored as plain JSON with metadata:
-
-```json
-{
-    "version": "6.6.0",
-    "created": 1705000000,
-    "modified": 1705003600,
-    "metadata": {},
-    "values": {
-        "Settings": {
-            "autoFarm": true,
-            "speed": 75,
-            "espColor": {"__type": "Color3", "value": "#FF0000"}
-        }
-    }
-}
-```
-
-Special types like `Color3` and `KeyCode` are automatically serialized/deserialized.
 
 ---
 
@@ -1006,7 +850,6 @@ end)
 
 | Version | Changes |
 |---|---|
-| 6.6.0 | **New:** Config System with `Aurora.ConfigManager`, `Window:SaveConfig`, `Window:LoadConfig`, `Tab:CreateConfigManager` · Auto-save/load with `ConfigName` parameter · Import/Export configs as JSON · Plain JSON storage in `workspace/AuroraConfigs/` |
 | 6.5.0 | **New:** `Tab:CreateProgressBar` · `Tab:CreateStatusLabel` · `CreateTable.SetRowColor` / `ClearRowColor` (with correct MouseLeave restore via per-row upvalue) · `Signal:Once` single-fire connections |
 | 6.4.0 | `TabContainer` reflow connection stored in `windowConnections` |
 | 6.2.0 | `element.Destroy()` disconnects owned UIS connections (Slider/Keybind/ColorPicker) · `MultiSelect` + `ColorPicker` register in `_dropdownCollapse` · `RegisterElement` accepts `ownedConns` |
