@@ -8,7 +8,7 @@ local UserInputService = game:GetService("UserInputService")
 local Players          = game:GetService("Players")
 local LocalPlayer      = Players.LocalPlayer
 
--- Built: 2026-03-12 07:13 UTC
+-- Built: 2026-03-12 07:28 UTC
 
 -- ────────────────────────────────────────────────────────────────────────
 --  Lightweight pub/sub event system
@@ -585,11 +585,11 @@ return function(self, cfg)
     })
     Utility.Create("UIListLayout", { Parent = OptionsFrame, SortOrder = Enum.SortOrder.LayoutOrder })
 
-    -- Declare exp before the closures so they capture the upvalue slot.
-    -- Assigned after UI construction; valid by the time any click fires.
+    -- Pre-declare exp so all closures below capture the upvalue slot.
     local exp
 
-    for i, option in ipairs(options) do
+    -- Builds one option button. Used by initial build and SetOptions.
+    local function makeOptionButton(i, option)
         local ob = Utility.Create("TextButton", {
             Parent           = OptionsFrame,
             Size             = UDim2.new(1, 0, 0, 30),
@@ -614,6 +614,11 @@ return function(self, cfg)
             if cfg.Callback then cfg.Callback(option) end
             OnChanged:Fire(option)
         end)
+        return ob
+    end
+
+    for i, option in ipairs(options) do
+        makeOptionButton(i, option)
     end
 
     -- Toggle button (header click)
@@ -624,7 +629,6 @@ return function(self, cfg)
         Text               = "",
     }).MouseButton1Click:Connect(function() exp.toggle() end)
 
-    -- Assign the expandable controller now that all closures referencing it exist.
     exp = Expandable.makeExpandable(
         DropFrame,
         36,
@@ -641,6 +645,23 @@ return function(self, cfg)
                 selected   = val
                 Label.Text = labelText .. ": " .. val
             end
+        end,
+        -- Replace the full options list at runtime. Preserves selected if still valid.
+        -- Does NOT fire Callback or OnChanged.
+        SetOptions = function(newOptions)
+            options = newOptions or {}
+            for _, child in ipairs(OptionsFrame:GetChildren()) do
+                if child:IsA("TextButton") then child:Destroy() end
+            end
+            for i, option in ipairs(options) do
+                makeOptionButton(i, option)
+            end
+            OptionsFrame.Size = UDim2.new(1, 0, 0, #options * 30)
+            if not table.find(options, selected) then
+                selected   = options[1] or "Select..."
+                Label.Text = labelText .. ": " .. selected
+            end
+            exp.collapse()
         end,
     }, DropFrame)
 end
@@ -2851,9 +2872,11 @@ local function createConfig(cfg)
                     newName = newName:match("^%s*(.-)%s*$")
                     if newName == "" or newName == profile then return end
                     self:SetProfile(newName)
-                    doSave()
+                    self:Save()   -- seed the new file with current values
+                    -- Rebuild dropdown options to include the new profile
+                    profileDropdown.SetOptions(listProfiles())
                     profileDropdown.SetValue(newName)
-                    Aurora:Notify({ Title = "Config", Message = "Created: " .. newName, Type = "Success" })
+                    Aurora:Notify({ Title = "Config", Message = "Profile created: " .. newName, Type = "Success" })
                 end,
             })
 
