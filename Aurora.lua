@@ -8,7 +8,7 @@ local UserInputService = game:GetService("UserInputService")
 local Players          = game:GetService("Players")
 local LocalPlayer      = Players.LocalPlayer
 
--- Built: 2026-03-12 07:35 UTC
+-- Built: 2026-03-12 07:41 UTC
 
 -- ────────────────────────────────────────────────────────────────────────
 --  Lightweight pub/sub event system
@@ -2615,8 +2615,22 @@ local HAS_FILE_API   = type(writefile)    == "function"
 local HAS_FOLDER_API = type(isfolder)    == "function"
                     and type(makefolder) == "function"
 local HAS_LIST_FILES = type(listfiles)   == "function"
-local HAS_DELETE     = type(deletefile)  == "function"
+local HAS_DELETE     = type(deletefile) == "function" or type(delfile) == "function"
 local HAS_CLIPBOARD  = type(setclipboard) == "function"
+
+-- Unified delete: tries deletefile then delfile, verifies with isfile afterwards.
+local function _deleteFileRaw(path)
+    if type(deletefile) == "function" then
+        pcall(deletefile, path)
+    elseif type(delfile) == "function" then
+        pcall(delfile, path)
+    end
+    -- Return true only if the file is actually gone
+    if type(isfile) == "function" then
+        return not isfile(path)
+    end
+    return false
+end
 
 -- Serialisation helpers
 local function serialise(value)
@@ -2699,7 +2713,7 @@ local function createConfig(cfg)
 
     local function deleteFile(path)
         if not HAS_FILE_API or not HAS_DELETE then return false end
-        return pcall(deletefile, path)
+        return _deleteFileRaw(path)
     end
 
     -- Last-profile persistence
