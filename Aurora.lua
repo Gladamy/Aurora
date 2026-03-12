@@ -8,7 +8,7 @@ local UserInputService = game:GetService("UserInputService")
 local Players          = game:GetService("Players")
 local LocalPlayer      = Players.LocalPlayer
 
--- Built: 2026-03-12 07:28 UTC
+-- Built: 2026-03-12 07:35 UTC
 
 -- ────────────────────────────────────────────────────────────────────────
 --  Lightweight pub/sub event system
@@ -2861,7 +2861,7 @@ local function createConfig(cfg)
                 Callback = function(chosen)
                     if chosen == profile then return end
                     self:SetProfile(chosen)
-                    Aurora:Notify({ Title = "Config", Message = "Switched to: " .. chosen, Type = "Success" })
+                    Notification.sharedNotify({ Title = "Config", Message = "Switched to: " .. chosen, Type = "Success" })
                 end,
             })
 
@@ -2876,7 +2876,7 @@ local function createConfig(cfg)
                     -- Rebuild dropdown options to include the new profile
                     profileDropdown.SetOptions(listProfiles())
                     profileDropdown.SetValue(newName)
-                    Aurora:Notify({ Title = "Config", Message = "Profile created: " .. newName, Type = "Success" })
+                    Notification.sharedNotify({ Title = "Config", Message = "Profile created: " .. newName, Type = "Success" })
                 end,
             })
 
@@ -2884,13 +2884,13 @@ local function createConfig(cfg)
                 Text     = "Delete Current Profile",
                 Callback = function()
                     if profile == "default" then
-                        Aurora:Notify({ Title = "Config", Message = "Can' .. 't delete default.", Type = "Warning" })
+                        Notification.sharedNotify({ Title = "Config", Message = "Can't delete default.", Type = "Warning" })
                         return
                     end
                     local prev = profile
                     self:DeleteProfile(profile)
                     profileDropdown.SetValue("default")
-                    Aurora:Notify({ Title = "Config", Message = prev .. " deleted.", Type = "Warning" })
+                    Notification.sharedNotify({ Title = "Config", Message = prev .. " deleted.", Type = "Warning" })
                 end,
             })
 
@@ -2908,10 +2908,10 @@ local function createConfig(cfg)
                 local json = self:Export()
                 if HAS_CLIPBOARD then
                     pcall(setclipboard, json)
-                    Aurora:Notify({ Title = "Config", Message = "Copied.", Type = "Success" })
+                    Notification.sharedNotify({ Title = "Config", Message = "Copied.", Type = "Success" })
                 else
                     print("[Aurora Config] Export:" .. json)
-                    Aurora:Notify({ Title = "Config", Message = "Printed to console.", Type = "Info" })
+                    Notification.sharedNotify({ Title = "Config", Message = "Printed to console.", Type = "Info" })
                 end
             end,
         })
@@ -2921,9 +2921,9 @@ local function createConfig(cfg)
             Placeholder = "Paste JSON and press Enter",
             Callback    = function(str)
                 if self:Import(str) then
-                    Aurora:Notify({ Title = "Config", Message = "Imported.", Type = "Success" })
+                    Notification.sharedNotify({ Title = "Config", Message = "Imported.", Type = "Success" })
                 else
-                    Aurora:Notify({ Title = "Config", Message = "Invalid JSON.", Type = "Error" })
+                    Notification.sharedNotify({ Title = "Config", Message = "Invalid JSON.", Type = "Error" })
                 end
             end,
         })
@@ -2932,7 +2932,7 @@ local function createConfig(cfg)
             Text     = "Reset to Defaults",
             Callback = function()
                 self:Reset()
-                Aurora:Notify({ Title = "Config", Message = "Reset to defaults.", Type = "Warning" })
+                Notification.sharedNotify({ Title = "Config", Message = "Reset to defaults.", Type = "Warning" })
             end,
         })
 
