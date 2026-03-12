@@ -8,7 +8,7 @@ local UserInputService = game:GetService("UserInputService")
 local Players          = game:GetService("Players")
 local LocalPlayer      = Players.LocalPlayer
 
--- Built: 2026-03-12 07:47 UTC
+-- Built: 2026-03-12 07:53 UTC
 
 -- ────────────────────────────────────────────────────────────────────────
 --  Lightweight pub/sub event system
@@ -2852,6 +2852,39 @@ local function createConfig(cfg)
         return deleted
     end
 
+    -- Rename the current profile. Copies the save file to the new name,
+    -- deletes the old file, updates active profile + sidecar.
+    -- Returns false if newName is invalid or already exists.
+    function self:RenameProfile(newName)
+        newName = tostring(newName):match("^%s*(.-)%s*$")
+        if newName == "" or newName == profile then return false end
+        if profile == "default" then return false end
+        -- Write current values under the new name
+        local oldProfile = profile
+        local content    = readFile(buildPath(oldProfile))
+        if not content then
+            -- Nothing saved yet — just switch name and save fresh
+            profile = newName
+            doSave()
+        else
+            writeFile(buildPath(newName), content)
+            deleteFile(buildPath(oldProfile))
+            profile = newName
+        end
+        saveLastProfile(newName)
+        OnProfileChanged:Fire(newName)
+        return true
+    end
+
+    -- Auto-generate the next available profile name: "Profile 1", "Profile 2" …
+    function self:NextProfileName()
+        local existing = {}
+        for _, p in ipairs(listProfiles()) do existing[p] = true end
+        local i = 1
+        while existing["Profile " .. i] do i = i + 1 end
+        return "Profile " .. i
+    end
+
     -- CreateControls: compact dropdown + import/export/reset (no section spam)
     function self:CreateControls(tab)
         if not tab or not tab.CreateSection then
@@ -2879,18 +2912,36 @@ local function createConfig(cfg)
                 end,
             })
 
-            tab:CreateInput({
-                Text        = "New Profile",
-                Placeholder = "Name — press Enter to create",
-                Callback    = function(newName)
-                    newName = newName:match("^%s*(.-)%s*$")
-                    if newName == "" or newName == profile then return end
+            tab:CreateButton({
+                Text     = "Create New Profile",
+                Callback = function()
+                    local newName = self:NextProfileName()
                     self:SetProfile(newName)
-                    self:Save()   -- seed the new file with current values
-                    -- Rebuild dropdown options to include the new profile
+                    self:Save()
                     profileDropdown.SetOptions(listProfiles())
                     profileDropdown.SetValue(newName)
-                    Notification.sharedNotify({ Title = "Config", Message = "Profile created: " .. newName, Type = "Success" })
+                    Notification.sharedNotify({ Title = "Config", Message = "Created: " .. newName, Type = "Success" })
+                end,
+            })
+
+            tab:CreateInput({
+                Text        = "Rename Current Profile",
+                Placeholder = "New name — press Enter",
+                Callback    = function(newName)
+                    newName = newName:match("^%s*(.-)%s*$")
+                    if newName == "" then return end
+                    if profile == "default" then
+                        Notification.sharedNotify({ Title = "Config", Message = "Can't rename default.", Type = "Warning" })
+                        return
+                    end
+                    local prev = profile
+                    if self:RenameProfile(newName) then
+                        profileDropdown.SetOptions(listProfiles())
+                        profileDropdown.SetValue(newName)
+                        Notification.sharedNotify({ Title = "Config", Message = prev .. " renamed to " .. newName, Type = "Success" })
+                    else
+                        Notification.sharedNotify({ Title = "Config", Message = "Rename failed.", Type = "Error" })
+                    end
                 end,
             })
 
