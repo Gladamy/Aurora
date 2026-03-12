@@ -8,7 +8,7 @@ local UserInputService = game:GetService("UserInputService")
 local Players          = game:GetService("Players")
 local LocalPlayer      = Players.LocalPlayer
 
--- Built: 2026-03-12 02:51 UTC
+-- Built: 2026-03-12 06:46 UTC
 
 -- ────────────────────────────────────────────────────────────────────────
 --  Lightweight pub/sub event system
@@ -585,6 +585,10 @@ return function(self, cfg)
     })
     Utility.Create("UIListLayout", { Parent = OptionsFrame, SortOrder = Enum.SortOrder.LayoutOrder })
 
+    -- Declare exp before the closures so they capture the upvalue slot.
+    -- Assigned after UI construction; valid by the time any click fires.
+    local exp
+
     for i, option in ipairs(options) do
         local ob = Utility.Create("TextButton", {
             Parent           = OptionsFrame,
@@ -620,8 +624,8 @@ return function(self, cfg)
         Text               = "",
     }).MouseButton1Click:Connect(function() exp.toggle() end)
 
-    -- Shared expandable controller (handles tween + registry in one place).
-    local exp = Expandable.makeExpandable(
+    -- Assign the expandable controller now that all closures referencing it exist.
+    exp = Expandable.makeExpandable(
         DropFrame,
         36,
         function() return 36 + #options * 30 end,
@@ -719,6 +723,8 @@ return function(self, cfg)
     })
     Utility.Create("UIListLayout", { Parent = ListFrame, SortOrder = Enum.SortOrder.LayoutOrder })
 
+    local exp  -- pre-declared so closures below capture the upvalue slot
+
     local optionBtns = {}
     for i, option in ipairs(options) do
         local ob = Utility.Create("TextButton", {
@@ -785,7 +791,7 @@ return function(self, cfg)
         end
     end)
 
-    local exp = Expandable.makeExpandable(DropFrame, 36, expandedH, Arrow)
+    exp = Expandable.makeExpandable(DropFrame, 36, expandedH, Arrow)
 
     return self:RegisterElement({
         OnChanged = OnChanged,
@@ -873,6 +879,7 @@ return function(self, cfg)
 
     -- Per-row visual sync helpers: box + tick + label for each option.
     local rowVisuals = {}   -- [option] = { box, tick, label }
+    local exp  -- pre-declared so toggle closure below captures the upvalue slot
 
     for i, option in ipairs(options) do
         local on  = selected[option] or false
@@ -946,7 +953,7 @@ return function(self, cfg)
         Text               = "",
     }).MouseButton1Click:Connect(function() exp.toggle() end)
 
-    local exp = Expandable.makeExpandable(
+    exp = Expandable.makeExpandable(
         MultiFrame,
         36,
         function() return 36 + #options * 30 end,
@@ -1273,6 +1280,8 @@ return function(self, cfg)
     })
     Utility.AddCorner(Preview, UDim.new(0, 4))
 
+    local exp  -- pre-declared so toggle closure below captures the upvalue slot
+
     Utility.Create("TextButton", {
         Parent             = PickerFrame,
         Size               = UDim2.new(1, 0, 0, 36),
@@ -1423,7 +1432,7 @@ return function(self, cfg)
         end
     end)
 
-    local exp = Expandable.makeExpandable(PickerFrame, 36, EXPANDED_H)
+    exp = Expandable.makeExpandable(PickerFrame, 36, EXPANDED_H)
 
     return self:RegisterElement({
         OnChanged = OnChanged,
