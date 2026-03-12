@@ -8,7 +8,7 @@ local UserInputService = game:GetService("UserInputService")
 local Players          = game:GetService("Players")
 local LocalPlayer      = Players.LocalPlayer
 
--- Built: 2026-03-12 07:53 UTC
+-- Built: 2026-03-12 07:58 UTC
 
 -- ────────────────────────────────────────────────────────────────────────
 --  Lightweight pub/sub event system
@@ -2859,6 +2859,10 @@ local function createConfig(cfg)
         newName = tostring(newName):match("^%s*(.-)%s*$")
         if newName == "" or newName == profile then return false end
         if profile == "default" then return false end
+        -- Refuse if a profile with that name already exists
+        for _, p in ipairs(listProfiles()) do
+            if p == newName then return false end
+        end
         -- Write current values under the new name
         local oldProfile = profile
         local content    = readFile(buildPath(oldProfile))
